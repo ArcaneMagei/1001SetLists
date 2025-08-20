@@ -53,6 +53,11 @@ const CAMELOT_COLORS = {
   '1B':'#FF6666','2B':'#FF9966','3B':'#FFFF66','4B':'#B2FF66','5B':'#66FF66','6B':'#66FF99',
   '7B':'#66FFFF','8B':'#66CCFF','9B':'#6666FF','10B':'#9966FF','11B':'#FF66FF','12B':'#FF66CC'
 };
+const CAMELOT_VALUE_MAP = {
+  '1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,
+  '1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24
+};
+const VALUE_TO_CAMELOT = Object.fromEntries(Object.entries(CAMELOT_VALUE_MAP).map(([k,v])=>[v,k]));
 const SHAPE_BY_TYPE = { transition: "square", effect: "triangle" };
 
 function fmtTime(sec) {
@@ -71,7 +76,7 @@ function secToPx(sec, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; r
 function pxToSec(px, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return px / pxPerSec; }
 function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a2, b2); }
 function seriesToPath(series, width, height, yOffset) { if (!series || series.length === 0) return ""; const stepX = width / (series.length - 1 || 1); const max = Math.max(1, ...series); const points = series.map((v, i) => `${i * stepX},${yOffset + (height - (v / max) * height)}`); return `M ${points.join(" L ")}`; }
-function camelotToValue(k) { if (!k) return 0; const map = {'1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,'1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24}; return map[k] || 0; }
+function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
 
 function buildDemo() {
   const mk = (track, name, start, end, sub, remix, camelot, energy) => ({ id: uid('clip'), track, name, startSec: start, endSec: end, baseColor: SUBGENRE_COLORS[sub] || '#3b82f6', remixType: remix, camelot, genre: 'DnB', subgenre: sub, energy, markers: [] });
@@ -157,6 +162,9 @@ export default function App() {
         const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
         setZoom(newZoom);
         el.scrollLeft = timeAtPointer * newPxPerSec - mouseX;
+      } else {
+        e.preventDefault();
+        el.scrollLeft += e.deltaY;
       }
     };
     el.addEventListener('wheel', onWheel, { passive:false });
@@ -434,7 +442,7 @@ export default function App() {
   const [hover, setHover] = useState(null);
 
   return (
-    <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
+    <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden overscroll-none" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
       <header className="flex items-center justify-between mb-1 flex-shrink-0 text-xs">
         <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.2)</h1>
         <div className="flex gap-1 items-center">
@@ -649,13 +657,15 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
       {/* Clip subgenres */}
       <div>
         <div className="font-semibold mb-1">Clips</div>
-        {clipNames.map(name => (
-          <div key={name} className="flex items-center gap-2 mb-1">
-            <div className="w-24 truncate">{name}</div>
-            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
-            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
-          </div>
-        ))}
+        <div className="grid grid-cols-2 gap-2">
+          {clipNames.map(name => (
+            <div key={name} className="flex items-center gap-2 mb-1">
+              <div className="w-24 truncate">{name}</div>
+              <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+            </div>
+          ))}
+        </div>
         <div className="flex items-center gap-2 mt-2">
           <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newClip.name} onChange={e=> setNewClip({ ...newClip, name:e.target.value })} />
           <input type="color" className="h-6 w-10" value={newClip.color} onChange={e=> setNewClip({ ...newClip, color:e.target.value })} />
@@ -666,17 +676,19 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
       {/* Marker subtypes */}
       <div>
         <div className="font-semibold mb-1">Markers</div>
-        {markerNames.map(name => (
-          <div key={name} className="flex items-center gap-2 mb-1">
-            <div className="w-24 truncate">{name}</div>
-            <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={e=> onUpdate(name,{ type:e.target.value })}>
-              <option value="transition">Transition</option>
-              <option value="effect">Effect</option>
-            </select>
-            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
-            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
-          </div>
-        ))}
+        <div className="grid grid-cols-2 gap-2">
+          {markerNames.map(name => (
+            <div key={name} className="flex items-center gap-2 mb-1">
+              <div className="w-24 truncate">{name}</div>
+              <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={e=> onUpdate(name,{ type:e.target.value })}>
+                <option value="transition">Transition</option>
+                <option value="effect">Effect</option>
+              </select>
+              <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+            </div>
+          ))}
+        </div>
         <div className="flex items-center gap-2 mt-2">
           <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newMarker.name} onChange={e=> setNewMarker({ ...newMarker, name:e.target.value })} />
           <select className="px-1 py-0.5 border rounded" value={newMarker.type} onChange={e=> setNewMarker({ ...newMarker, type:e.target.value })}>
@@ -691,13 +703,15 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
       {/* Remix types */}
       <div>
         <div className="font-semibold mb-1">Remix</div>
-        {remixNames.map(name => (
-          <div key={name} className="flex items-center gap-2 mb-1">
-            <div className="w-24 truncate">{name}</div>
-            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
-            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
-          </div>
-        ))}
+        <div className="grid grid-cols-2 gap-2">
+          {remixNames.map(name => (
+            <div key={name} className="flex items-center gap-2 mb-1">
+              <div className="w-24 truncate">{name}</div>
+              <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+            </div>
+          ))}
+        </div>
         <div className="flex items-center gap-2 mt-2">
           <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newRemix.name} onChange={e=> setNewRemix({ ...newRemix, name:e.target.value })} />
           <input type="color" className="h-6 w-10" value={newRemix.color} onChange={e=> setNewRemix({ ...newRemix, color:e.target.value })} />
@@ -713,13 +727,17 @@ function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
   const [btnTop, setBtnTop] = useState(0);
   useEffect(() => {
     const update = () => {
-      const rect = rowRef.current?.getBoundingClientRect();
+      const rect = document.getElementById(`track-${trackIndex}`)?.getBoundingClientRect();
       if (rect) setBtnTop(rect.top + rect.height / 2);
     };
     update();
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
+    window.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update);
+    };
+  }, [trackIndex]);
   return (
     <div className="mb-1" ref={rowRef}>
       <div className="flex items-center gap-2 mb-0.5">
@@ -759,14 +777,14 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   const stripe = subtypes[clip.remixType] || '';
   const bg = stripe ? `repeating-linear-gradient(45deg, ${baseColor}, ${baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : baseColor;
 
-  function startDrag(e) { e.stopPropagation(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+  function startDrag(e) { e.stopPropagation(); e.preventDefault(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
-  function resizeEdge(e, which) { e.stopPropagation(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); if (which === 'left') { const newStart = clamp(sec, 0, clip.endSec - 0.1); onUpdate({ startSec: newStart }); } else { const newEnd = clamp(sec, clip.startSec + 0.1, 99999); onUpdate({ endSec: newEnd }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+  function resizeEdge(e, which) { e.stopPropagation(); e.preventDefault(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); if (which === 'left') { const newStart = clamp(sec, 0, clip.endSec - 0.1); onUpdate({ startSec: newStart }); } else { const newEnd = clamp(sec, clip.startSec + 0.1, 99999); onUpdate({ endSec: newEnd }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
   function markerWidthPx(m) { const dur = m.endSec != null ? (m.endSec - m.startSec) : 0; return m.endSec != null ? Math.max(6, secToPx(dur, pxPerBeat)) : 4; }
 
   function startDragMarker(e, m, mode) {
-    e.stopPropagation(); const startX = e.clientX; const startStartSec = m.startSec != null ? m.startSec : (clip.startSec); const startEndSec = m.endSec != null ? m.endSec : startStartSec; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const dxPx = ev.clientX - startX; const dxSec = pxToSec(dxPx, pxPerBeat); if (mode === 'body') { let ns = startStartSec + dxSec; let ne = startEndSec + dxSec; ns = clamp(ns, clip.startSec, clip.endSec); ne = clamp(ne, ns, clip.endSec); onUpdateMarker(m.id, { startSec: ns, endSec: m.endSec != null ? ne : undefined }); } else if (mode === 'left') { let ns = startStartSec + dxSec; ns = clamp(ns, clip.startSec, m.endSec != null ? m.endSec : startEndSec); onUpdateMarker(m.id, { startSec: ns }); } else if (mode === 'right') { let ne = startEndSec + dxSec; ne = clamp(ne, m.startSec != null ? m.startSec : clip.startSec, clip.endSec); onUpdateMarker(m.id, { endSec: ne }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+    e.stopPropagation(); e.preventDefault(); const startX = e.clientX; const startStartSec = m.startSec != null ? m.startSec : (clip.startSec); const startEndSec = m.endSec != null ? m.endSec : startStartSec; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const dxPx = ev.clientX - startX; const dxSec = pxToSec(dxPx, pxPerBeat); if (mode === 'body') { let ns = startStartSec + dxSec; let ne = startEndSec + dxSec; ns = clamp(ns, clip.startSec, clip.endSec); ne = clamp(ne, ns, clip.endSec); onUpdateMarker(m.id, { startSec: ns, endSec: m.endSec != null ? ne : undefined }); } else if (mode === 'left') { let ns = startStartSec + dxSec; ns = clamp(ns, clip.startSec, m.endSec != null ? m.endSec : startEndSec); onUpdateMarker(m.id, { startSec: ns }); } else if (mode === 'right') { let ne = startEndSec + dxSec; ne = clamp(ne, m.startSec != null ? m.startSec : clip.startSec, clip.endSec); onUpdateMarker(m.id, { endSec: ne }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
   function insertMarkerAtClick(e) {
     e.stopPropagation();
@@ -783,7 +801,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   function showMarkerHover(e, m) { const typ = m.type === 'transition' ? 'Transition' : 'Effect'; const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : ''; const sr = (m.startSec ?? clip.startSec) - clip.startSec; const er = m.endSec != null ? (m.endSec - clip.startSec) : null; const html = '<div><b>' + typ + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' + detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` + (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>'; onHover({ x: e.clientX, y: e.clientY, html }); }
 
   return (
-    <div className={"absolute rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+    <div className={"absolute rounded-xl border shadow-inner select-none" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
@@ -911,7 +929,7 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
             </button>
             <div className="w-20 text-right">{m.startSec!=null?`${fmtSec2(m.startSec)}s`:''}</div>
             <div className="w-20 text-right">{m.endSec!=null?`${fmtSec2(m.endSec)}s`:''}</div>
-            <button className="px-2 py-0.5 bg-white border rounded text-xs" onClick={()=> onUpdateMarker(clip.id, m.id, { endSec: m.endSec!=null ? undefined : (m.startSec + SECS_PER_BEAT * BEATS_PER_PHRASE) })}>{m.endSec!=null ? 'Make Point' : 'Make Interval'}</button>
+            <button className="px-2 py-0.5 bg-white border rounded text-xs" onClick={()=> onUpdateMarker(clip.id, m.id, m.endSec!=null ? { endSec: undefined, endBeat: undefined } : { endSec: m.startSec + SECS_PER_BEAT * BEATS_PER_PHRASE })}>{m.endSec!=null ? 'Make Point' : 'Make Interval'}</button>
             <button className="px-2 py-0.5 bg-rose-600 text-white rounded text-xs" onClick={()=> onDeleteMarker(clip.id, m.id)}>Delete</button>
           </div>
         ))}
@@ -922,9 +940,16 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
 
 function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   const width = Math.ceil(seconds * pxPerSec);
-  const height = 120;
-  const energyPath = seriesToPath(energySeries, width, height/2, 0);
-  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height/2, height/2);
+  const height = 100;
+  const energyPath = seriesToPath(energySeries, width, height, 0);
+  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height, 0);
+  const gradId = useMemo(() => uid('camGrad'), []);
+  const stops = (camelotSeries||[]).map((v,i) => {
+    const label = VALUE_TO_CAMELOT[v];
+    const color = CAMELOT_COLORS[label] || '#0ea5e9';
+    const offset = (i / ((camelotSeries.length - 1) || 1)) * 100;
+    return <stop key={i} offset={`${offset}%`} stopColor={color} />;
+  });
 
   function onMove(e){
     const rect = e.currentTarget.getBoundingClientRect();
@@ -942,10 +967,11 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   return (
     <div style={{ width, position:'relative' }} onMouseMove={onMove} onMouseLeave={onLeave}>
       <svg width={width} height={height}>
-        <rect x={0} y={0} width={width} height={height/2} fill="rgba(34,197,94,0.06)" />
-        <rect x={0} y={height/2} width={width} height={height/2} fill="rgba(59,130,246,0.06)" />
-        <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" />
-        <path d={camelotPath} fill="none" strokeWidth={2} stroke="#0ea5e9" />
+        <defs>
+          <linearGradient id={gradId} x1="0" x2="100%" y1="0" y2="0">{stops}</linearGradient>
+        </defs>
+        <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={camelotPath} fill="none" strokeWidth={2} stroke={`url(#${gradId})`} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </div>
   );
