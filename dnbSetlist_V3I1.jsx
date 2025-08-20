@@ -391,8 +391,8 @@ export default function App() {
   const [hover, setHover] = useState(null);
 
   return (
-    <div className="min-h-screen p-4 bg-slate-50 text-slate-900" ref={containerRef}>
-      <header className="flex items-center justify-between mb-3">
+    <div className="h-screen p-4 bg-slate-50 text-slate-900 flex flex-col overflow-hidden" ref={containerRef}>
+      <header className="flex items-center justify-between mb-3 flex-shrink-0">
         <h1 className="text-2xl font-bold">DnB Live Set Timeline (v3.2)</h1>
         <div className="flex gap-2 items-center">
           <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-2 py-1 border rounded" onBlur={(e)=> attachPlayer(e.target.value)} />
@@ -413,7 +413,7 @@ export default function App() {
         )}
       </header>
 
-      <div className="bg-white rounded p-3 shadow overflow-auto">
+      <div className="bg-white rounded p-3 shadow overflow-auto flex-1">
         {/* Big overall timeline integrated above the tracks */}
         <div style={{ width: timelineWidthPx }} className="mb-2">
           <BigTimelineHeader
@@ -461,7 +461,7 @@ export default function App() {
         </div>
       </div>
 
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-2 flex-shrink-0">
         <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} onAddSubtype={addSubtype} onUpdateSubtype={updateSubtype} onDeleteSubtype={deleteSubtype} />
       </div>
 
@@ -553,45 +553,33 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
   const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
   const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
   const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
-  const markersByType = {
-    transition: markerNames.filter(n => (subtypeTypes[n] || 'transition') === 'transition'),
-    effect: markerNames.filter(n => (subtypeTypes[n] || 'transition') === 'effect')
-  };
+  const markerItems = markerNames.map(n => ({ name: n, type: subtypeTypes[n] || 'transition' }));
   return (
     <div className="relative w-full border rounded p-3">
       <button className="absolute top-2 right-2 text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
-      <div className="flex gap-6 items-start w-full justify-between text-sm">
-        <div>
+      <div className="flex items-start text-sm w-full">
+        <div className="pr-4">
           <div className="font-semibold">Clips (Subgenre)</div>
-          <div className="flex gap-2 mt-1">{clipNames.map(name => (
+          <div className="flex gap-2 mt-1 flex-wrap">{clipNames.map(name => (
             <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name],borderRadius:3}}/><div className="text-xs">{name}</div></div>
           ))}</div>
         </div>
-        <div className="flex-1">
+        <div className="px-4 border-l">
           <div className="font-semibold">Markers (Subtypes)</div>
-          <div className="mt-1">
-            {['transition','effect'].map(type => (
-              <div key={type} className="mb-2">
-                <div className="text-xs font-medium mb-1">{type[0].toUpperCase() + type.slice(1)}</div>
-                <div className="flex gap-3 flex-wrap items-center">
-                  {markersByType[type].map(name => (
-                    <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
-                      {type === 'effect' ? (
-                        <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
-                      ) : (
-                        <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
-                      )}
-                      <div className="text-xs">{name}</div>
-                    </div>
-                  ))}
-                </div>
+          <div className="flex gap-3 flex-wrap items-center mt-1">
+            {markerItems.map(({name,type}) => (
+              <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
+                {type === 'effect'
+                  ? <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
+                  : <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />}
+                <div className="text-xs">{name}</div>
               </div>
             ))}
           </div>
         </div>
-        <div>
+        <div className="pl-4 border-l">
           <div className="font-semibold">Remix (Striped)</div>
-          <div className="flex gap-2 mt-1">{remixNames.map(name => (
+          <div className="flex gap-2 mt-1 flex-wrap">{remixNames.map(name => (
             <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{name}</div></div>
           ))}</div>
         </div>
@@ -679,17 +667,20 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
 
 function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
   return (
-    <div className="mb-3 flex items-start relative">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
-        </div>
-        <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
-          <GridBackground pxPerBeat={pxPerBeat} />
-          {children}
-        </div>
+    <div className="mb-3">
+      <div className="flex items-center gap-2 mb-1">
+        <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
       </div>
-      <button className="px-2 py-1 rounded bg-white border sticky top-2 right-2" onClick={onAdd}>+ Add Clip</button>
+      <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
+        <GridBackground pxPerBeat={pxPerBeat} />
+        {children}
+        <button
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white border shadow flex items-center justify-center text-lg"
+          onClick={onAdd}
+        >
+          +
+        </button>
+      </div>
     </div>
   );
 }
@@ -845,9 +836,6 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
         </label>
         <label className="col-span-2 flex items-center gap-2"><span className="w-20">Label</span><input className="flex-1 px-2 py-1 border rounded" value={draft.label} onChange={(e)=> updateField('label', e.target.value)} /></label>
         <label className="col-span-2 flex items-center gap-2"><span className="w-20">Details</span><textarea rows={3} className="flex-1 px-2 py-1 border rounded" value={draft.details} onChange={(e)=> updateField('details', e.target.value)} /></label>
-        <label className="flex items-center gap-2"><span className="w-20">Color</span><input type="color" className="h-8 w-16" value={(draft.subtype && subtypes[draft.subtype]) || draft.color || '#000000'} disabled /></label>
-        <label className="flex items-center gap-2"><span className="w-20">Start (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={fmtSec2(draft.startSec)} onChange={(e)=> updateField('startSec', Math.max(0, Number(e.target.value||0)))} /></label>
-        <label className="flex items-center gap-2"><span className="w-20">End (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={draft.endSec == null ? '' : fmtSec2(draft.endSec)} onChange={(e)=> updateField('endSec', e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)))} /></label>
       </div>
 
       <div className="mt-4">
