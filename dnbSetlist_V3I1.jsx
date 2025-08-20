@@ -79,7 +79,7 @@ function buildDemo() {
 }
 
 export default function App() {
-  const MIN_ZOOM = 0.15, MAX_ZOOM = 6;
+  const MIN_ZOOM = 0.02, MAX_ZOOM = 6;
   const [zoom, setZoom] = useState(1);
   const pxPerBeat = BASE_PX_PER_BEAT * zoom;
   const pxPerSec = pxPerBeat / SECS_PER_BEAT;
@@ -149,8 +149,7 @@ export default function App() {
       if (updated.endSec <= updated.startSec) updated.endSec = updated.startSec + 0.001;
       const others = prev.filter((_,i)=>i!==idx);
       if (!noOverlap(updated, others)) return prev;
-      const moving = patch.startSec != null && patch.endSec != null && (patch.endSec - current.endSec) === (patch.startSec - current.startSec);
-      if (moving && patch.startSec !== current.startSec) {
+      if (patch.startSec != null && patch.startSec !== current.startSec) {
         const delta = patch.startSec - current.startSec;
         updated.markers = (current.markers||[]).map(m => ({ ...m, startSec: m.startSec + delta, endSec: m.endSec != null ? m.endSec + delta : undefined }));
       }
@@ -205,12 +204,26 @@ export default function App() {
         newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor:'#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, markers:[] });
       }
       newClips.sort((a,b)=> a.startSec - b.startSec);
+      // adjust end times based on next start if not overlapping
+      for (let i=0; i<newClips.length; i++){
+        const next = newClips[i+1];
+        if (next){
+          const diff = next.startSec - newClips[i].startSec;
+          if (diff >= 60) newClips[i].endSec = next.startSec;
+        }
+      }
       const trackEnds = [];
+      let lastDeck = -1;
       for (const c of newClips){
-        let t=0;
+        let t = 0;
         while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        if (t === lastDeck) {
+          t++;
+          while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        }
         c.track = t;
         trackEnds[t] = c.endSec;
+        lastDeck = t;
       }
       setClips(newClips);
     };
@@ -444,12 +457,15 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 
   function onClick(e){ const rect = e.currentTarget.getBoundingClientRect(); const x = e.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); onSeek && onSeek(clamp(sec,0,totalSec)); }
 
-  // build mm:ss second grid (labels every 5s)
+  // build second grid with adaptive spacing when zoomed out
   const gridEls = [];
-  const labelStep = 5; // seconds
-  for (let s=0; s<= totalSec; s+=1) {
+  const minLabelPx = 60; // minimum pixels between time labels
+  let labelStep = 5;
+  while (secToPx(labelStep, pxPerBeat) < minLabelPx) labelStep *= 2;
+  const gridStep = Math.max(1, labelStep / 5);
+  for (let s = 0; s <= totalSec; s += gridStep) {
     const x = Math.round(secToPx(s, pxPerBeat));
-    const isLabel = s % labelStep === 0;
+    const isLabel = Math.abs(s % labelStep) < 1e-6;
     gridEls.push(
       <div key={`g-${s}`} style={{ position:'absolute', left: x, top: 0, bottom: 0, width: 1, background: isLabel ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.06)' }} />
     );
@@ -534,25 +550,28 @@ function Legend({ subtypes, subtypeTypes }) {
 
 function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
   return (
-    <div className="mb-3 flex items-start">
+    <div className="mb-3 flex items-start relative">
       <div>
         <div className="flex items-center gap-2 mb-1">
           <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
         </div>
-        <div id={`track-${trackIndex}`} className="relative h-40 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
+        <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
           <GridBackground pxPerBeat={pxPerBeat} />
           {children}
         </div>
       </div>
-      <button className="px-2 py-1 rounded bg-white border sticky top-2 ml-2" onClick={onAdd}>+ Add Clip</button>
+      <button className="px-2 py-1 rounded bg-white border sticky top-2 right-2" onClick={onAdd}>+ Add Clip</button>
     </div>
   );
 }
 
 function GridBackground({ pxPerBeat }) {
-  const step = Math.max(8, Math.round(pxPerBeat));
-  const phrase = Math.round(pxPerBeat * BEATS_PER_PHRASE);
-  const style = { backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase}px)` };
+  const beatStep = Math.max(1, Math.ceil(8 / pxPerBeat));
+  const step = pxPerBeat * beatStep;
+  const phrase = Math.max(step, pxPerBeat * BEATS_PER_PHRASE);
+  const style = {
+    backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase}px)`
+  };
   return <div className="absolute inset-0" style={style} />;
 }
 
@@ -578,7 +597,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   function showMarkerHover(e, m) { const typ = m.type === 'transition' ? 'Transition' : 'Effect'; const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : ''; const sr = (m.startSec ?? clip.startSec) - clip.startSec; const er = m.endSec != null ? (m.endSec - clip.startSec) : null; const html = '<div><b>' + typ + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' + detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` + (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>'; onHover({ x: e.clientX, y: e.clientY, html }); }
 
   return (
-    <div className={"absolute top-6 rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+    <div className={"absolute rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
@@ -630,7 +649,7 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
 
   if (!clip) return null;
 
-  function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' or field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
+  function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' || field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
 
   return (
     <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-1 md:grid-cols-2 gap-6">
