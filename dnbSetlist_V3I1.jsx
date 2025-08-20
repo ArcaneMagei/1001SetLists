@@ -551,37 +551,47 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype }) {
   const [manage, setManage] = useState(false);
   const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
-  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
   const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
+  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
+  const markersByType = {
+    transition: markerNames.filter(n => (subtypeTypes[n] || 'transition') === 'transition'),
+    effect: markerNames.filter(n => (subtypeTypes[n] || 'transition') === 'effect')
+  };
   return (
     <div className="relative w-full border rounded p-3">
       <button className="absolute top-2 right-2 text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
-      <div className="text-sm flex flex-col gap-2">
+      <div className="flex gap-6 items-start w-full justify-between text-sm">
         <div>
           <div className="font-semibold">Clips (Subgenre)</div>
-          <div className="flex gap-2 mt-1 flex-wrap">{clipNames.map(name => (
+          <div className="flex gap-2 mt-1">{clipNames.map(name => (
             <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name],borderRadius:3}}/><div className="text-xs">{name}</div></div>
           ))}</div>
         </div>
-        <div className="border-t pt-2">
-          <div className="font-semibold">Markers</div>
-          <div className="mt-1 flex gap-3 flex-wrap items-center">{markerNames.map(name => {
-            const type = subtypeTypes[name];
-            return (
-              <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
-                {type === 'effect' ? (
-                  <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
-                ) : (
-                  <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
-                )}
-                <div className="text-xs">{name}</div>
+        <div className="flex-1">
+          <div className="font-semibold">Markers (Subtypes)</div>
+          <div className="mt-1">
+            {['transition','effect'].map(type => (
+              <div key={type} className="mb-2">
+                <div className="text-xs font-medium mb-1">{type[0].toUpperCase() + type.slice(1)}</div>
+                <div className="flex gap-3 flex-wrap items-center">
+                  {markersByType[type].map(name => (
+                    <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
+                      {type === 'effect' ? (
+                        <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
+                      ) : (
+                        <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
+                      )}
+                      <div className="text-xs">{name}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            );
-          })}</div>
+            ))}
+          </div>
         </div>
-        <div className="border-t pt-2">
+        <div>
           <div className="font-semibold">Remix (Striped)</div>
-          <div className="flex gap-2 mt-1 flex-wrap">{remixNames.map(name => (
+          <div className="flex gap-2 mt-1">{remixNames.map(name => (
             <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{name}</div></div>
           ))}</div>
         </div>
