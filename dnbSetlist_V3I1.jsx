@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// DnB Live Set Timeline — v3.1.1 (bugfix)
-// - Fix: unterminated string + missing brace in onPlayheadMouseDown
-// - Fix: CSV export newline ("\n")
-// - Fix: escapeHtml quote map
-// - Keep all v3.1 features
+// DnB Live Set Timeline — v3.2
+// - Markers move with clips
+// - Spacebar toggles play/pause
+// - Display media title and timing
+// - Import YouTube setlists
+// - Clips can move decks & sticky Add Clip button
 
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
@@ -78,10 +79,26 @@ function buildDemo() {
 }
 
 export default function App() {
-  const MIN_ZOOM = 0.15, MAX_ZOOM = 6;
+  const MIN_ZOOM = 0.02, MAX_ZOOM = 6;
   const [zoom, setZoom] = useState(1);
   const pxPerBeat = BASE_PX_PER_BEAT * zoom;
   const pxPerSec = pxPerBeat / SECS_PER_BEAT;
+
+  // subtype colors (user-manageable)
+  const initialSubtypes = useMemo(()=> ({ ...TRANSITION_COLORS, ...EFFECT_COLORS }), []);
+  const initialSubtypeTypes = useMemo(()=> ({ ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])), ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])) }), []);
+  const [subtypes, setSubtypes] = useState(() => {
+    const saved = localStorage.getItem('dnb_subtypes_v1');
+    if (saved) { try { return JSON.parse(saved); } catch{} }
+    return initialSubtypes;
+  });
+  const [subtypeTypes, setSubtypeTypes] = useState(() => {
+    const saved = localStorage.getItem('dnb_subtype_types_v1');
+    if (saved) { try { return JSON.parse(saved); } catch{} }
+    return initialSubtypeTypes;
+  });
+  useEffect(()=> localStorage.setItem('dnb_subtypes_v1', JSON.stringify(subtypes)), [subtypes]);
+  useEffect(()=> localStorage.setItem('dnb_subtype_types_v1', JSON.stringify(subtypeTypes)), [subtypeTypes]);
 
   const [clips, setClips] = useState(() => { const saved = localStorage.getItem('dnb_timeline_v2'); if (saved) { try { return JSON.parse(saved); } catch {} } return buildDemo(); });
   useEffect(()=> localStorage.setItem('dnb_timeline_v2', JSON.stringify(clips)), [clips]);
@@ -90,14 +107,16 @@ export default function App() {
   const selectedClip = clips.find(c=>c.id===selectedClipId) || null;
   const [selectedMarkerRef, setSelectedMarkerRef] = useState(null);
 
-  // subtype colors (user-manageable)
-  const initialSubtypes = useMemo(()=> ({ ...TRANSITION_COLORS, ...EFFECT_COLORS }), []);
-  const initialSubtypeTypes = useMemo(()=> ({ ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])), ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])) }), []);
-  const [subtypeTypes] = useState(initialSubtypeTypes);
-  const [subtypes] = useState(initialSubtypes);
-
   // media state
   const [mediaDurationSec, setMediaDurationSec] = useState(0);
+  const [mediaInfo, setMediaInfo] = useState(() => {
+    const saved = localStorage.getItem('dnb_media_info');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return { url: '', title: '' };
+  });
+  useEffect(() => { localStorage.setItem('dnb_media_info', JSON.stringify(mediaInfo)); }, [mediaInfo]);
 
   const lastClipEnd = useMemo(()=> Math.max(0, ...clips.map(c => c.endSec || 0)), [clips]);
   const maxEnd = Math.max(120, mediaDurationSec || 0, lastClipEnd) + DEFAULT_TAIL_PADDING_SEC;
@@ -131,7 +150,22 @@ export default function App() {
     if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); } else alert('Cannot insert: overlaps an existing clip on this track.');
   }
 
-  function updateClip(id, patch) { setClips(prev=>{ const idx = prev.findIndex(c=>c.id===id); if (idx===-1) return prev; const updated = { ...prev[idx], ...patch }; if (updated.endSec <= updated.startSec) updated.endSec = updated.startSec + 0.001; const others = prev.filter((_,i)=>i!==idx); if (!noOverlap(updated, others)) return prev; const copy = [...prev]; copy[idx]=updated; return copy; }); }
+  function updateClip(id, patch) {
+    setClips(prev=>{
+      const idx = prev.findIndex(c=>c.id===id);
+      if (idx===-1) return prev;
+      const current = prev[idx];
+      const updated = { ...current, ...patch };
+      if (updated.endSec <= updated.startSec) updated.endSec = updated.startSec + 0.001;
+      const others = prev.filter((_,i)=>i!==idx);
+      if (!noOverlap(updated, others)) return prev;
+      if (patch.startSec != null && patch.startSec !== current.startSec) {
+        const delta = patch.startSec - current.startSec;
+        updated.markers = (current.markers||[]).map(m => ({ ...m, startSec: m.startSec + delta, endSec: m.endSec != null ? m.endSec + delta : undefined }));
+      }
+      const copy = [...prev]; copy[idx]=updated; return copy;
+    });
+  }
   function deleteClip(id) { setClips(prev=> prev.filter(c=>c.id!==id)); if (selectedClipId===id) setSelectedClipId(null); if (selectedMarkerRef && selectedMarkerRef.clipId === id) setSelectedMarkerRef(null); }
 
   function addMarker(clipId, marker) { // marker may have startSec/endSec (preferred) or startBeat/endBeat
@@ -139,6 +173,28 @@ export default function App() {
   }
   function updateMarker(clipId, markerId, patch) { setClips(prev=> prev.map(c=> { if (c.id!==clipId) return c; return { ...c, markers: (c.markers||[]).map(m=> m.id===markerId ? normalizeMarker({ ...m, ...patch }, c) : m) }; })); }
   function deleteMarker(clipId, markerId) { setClips(prev=> prev.map(c=> c.id===clipId ? { ...c, markers: (c.markers||[]).filter(m=> m.id!==markerId) } : c)); if (selectedMarkerRef && selectedMarkerRef.clipId===clipId && selectedMarkerRef.markerId===markerId) setSelectedMarkerRef(null); }
+
+  // subtype management
+  function addSubtype(name, type, color) {
+    if (!name) return;
+    setSubtypes(prev => ({ ...prev, [name]: color }));
+    setSubtypeTypes(prev => ({ ...prev, [name]: type }));
+  }
+  function updateSubtype(name, patch) {
+    if (!name) return;
+    if (patch.color != null) setSubtypes(prev => ({ ...prev, [name]: patch.color }));
+    if (patch.type) setSubtypeTypes(prev => ({ ...prev, [name]: patch.type }));
+  }
+  function deleteSubtype(name) {
+    setSubtypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
+    setSubtypeTypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
+  }
+
+  function clearAllClips() {
+    setClips([]);
+    setSelectedClipId(null);
+    setSelectedMarkerRef(null);
+  }
 
   function normalizeMarker(m, clip) {
     const out = { ...m };
@@ -162,10 +218,47 @@ export default function App() {
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); download(url,'timeline.csv');
   }
   function download(url, filename){ const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
-  function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const data = JSON.parse(String(r.result)); if (data && Array.isArray(data.clips)) { setSubtypes(data.subtypes||initialSubtypes); // preserve if present
-      // setSubtypeTypes not exposed for edit in 3.1.1 but we keep from file if present
-      // eslint-disable-next-line no-unused-expressions
-      data.subtypeTypes; setClips(data.clips); } else if (Array.isArray(data)) { setClips(data); } }catch(e){ alert('Invalid JSON file'); console.error(e); } }; r.readAsText(file); }
+  function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const data = JSON.parse(String(r.result)); if (data && Array.isArray(data.clips)) { setSubtypes(data.subtypes||initialSubtypes); setSubtypeTypes(data.subtypeTypes||initialSubtypeTypes); setClips(data.clips); } else if (Array.isArray(data)) { setClips(data); } }catch(e){ alert('Invalid JSON file'); console.error(e); } }; r.readAsText(file); }
+  function importYTSetlist(file){
+    const r = new FileReader();
+    r.onload = () => {
+      clearAllClips();
+      const text = String(r.result||'');
+      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+      const newClips = [];
+      for (const line of lines){
+        const m = line.match(/^(\d+):(\d{2})\s+(.*)$/);
+        if (!m) continue;
+        const startSec = Number(m[1])*60 + Number(m[2]);
+        const name = m[3];
+        newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor:'#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, markers:[] });
+      }
+      newClips.sort((a,b)=> a.startSec - b.startSec);
+      // adjust end times based on next start if not overlapping
+      for (let i=0; i<newClips.length; i++){
+        const next = newClips[i+1];
+        if (next){
+          const diff = next.startSec - newClips[i].startSec;
+          if (diff >= 60) newClips[i].endSec = next.startSec;
+        }
+      }
+      const trackEnds = [];
+      let lastDeck = -1;
+      for (const c of newClips){
+        let t = 0;
+        while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        if (t === lastDeck) {
+          t++;
+          while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        }
+        c.track = t;
+        trackEnds[t] = c.endSec;
+        lastDeck = t;
+      }
+      setClips(newClips);
+    };
+    r.readAsText(file);
+  }
 
   // YouTube / SoundCloud loader
   function loadYouTubeAPI(cb) {
@@ -184,13 +277,14 @@ export default function App() {
     const el = document.getElementById('player-container'); if (!el) return; el.innerHTML = '';
     playerRef.current = null; playerTypeRef.current = null; playerReadyRef.current = false;
     setMediaDurationSec(0);
-    if (!link) return;
+    if (!link) { setMediaInfo({ url: '', title: '' }); return; }
+    setMediaInfo({ url: link, title: '' });
     if (/youtube.com|youtu.be/.test(link)) {
       playerTypeRef.current = 'youtube';
       loadYouTubeAPI(()=>{
         const id = uid('yt');
         const iframe = document.createElement('div'); iframe.id = id; el.appendChild(iframe);
-        playerRef.current = new window.YT.Player(id, { height: '0', width: '0', videoId: extractYouTubeId(link), playerVars: { start: 0, controls: 1 }, events: { onReady: ()=> { playerReadyRef.current = true; try { const d = playerRef.current.getDuration?.() || 0; if (d) setMediaDurationSec(d); } catch {} }, onStateChange: onYTStateChange } });
+        playerRef.current = new window.YT.Player(id, { height: '0', width: '0', videoId: extractYouTubeId(link), playerVars: { start: 0, controls: 1 }, events: { onReady: ()=> { playerReadyRef.current = true; try { const d = playerRef.current.getDuration?.() || 0; if (d) setMediaDurationSec(d); const t = playerRef.current.getVideoData?.().title; if (t) setMediaInfo(mi => ({ ...mi, title: t })); } catch {} }, onStateChange: onYTStateChange } });
       });
     } else if (/soundcloud.com/.test(link)) {
       playerTypeRef.current = 'soundcloud';
@@ -200,6 +294,7 @@ export default function App() {
         playerRef.current = widget;
         playerReadyRef.current = true;
         try { widget.getDuration?.((ms)=> setMediaDurationSec((ms||0)/1000)); } catch {}
+        try { widget.getCurrentSound?.(sound => { if (sound && sound.title) setMediaInfo(mi => ({ ...mi, title: sound.title })); }); } catch {}
       });
     } else {
       alert('Unsupported link. Use YouTube or SoundCloud URL.');
@@ -210,6 +305,14 @@ export default function App() {
   }
 
   function onYTStateChange(e) { /* no-op for now */ }
+
+  useEffect(() => {
+    if (mediaInfo.url) {
+      const input = document.getElementById('media-url');
+      if (input) input.value = mediaInfo.url;
+      attachPlayer(mediaInfo.url);
+    }
+  }, []);
 
   // playback loop and sync
   useEffect(()=>{
@@ -253,6 +356,14 @@ export default function App() {
     }
   }
 
+  const playPauseRef = useRef(playPauseToggle);
+  playPauseRef.current = playPauseToggle;
+  useEffect(() => {
+    const onKey = (e) => { if (e.code === 'Space') { e.preventDefault(); playPauseRef.current(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   function seekTo(sec) {
     setPlayheadSec(sec);
     if (playerReadyRef.current && playerRef.current) {
@@ -269,7 +380,7 @@ export default function App() {
   return (
     <div className="min-h-screen p-4 bg-slate-50 text-slate-900" ref={containerRef}>
       <header className="flex items-center justify-between mb-3">
-        <h1 className="text-2xl font-bold">DnB Live Set Timeline (v3.1.1)</h1>
+        <h1 className="text-2xl font-bold">DnB Live Set Timeline (v3.2)</h1>
         <div className="flex gap-2 items-center">
           <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-2 py-1 border rounded" onBlur={(e)=> attachPlayer(e.target.value)} />
           <div id="player-container" style={{ width:200 }} />
@@ -278,7 +389,15 @@ export default function App() {
           <button onClick={exportJSON} className="px-3 py-1 rounded bg-slate-900 text-white">Export JSON</button>
           <button onClick={exportCSV} className="px-3 py-1 rounded bg-slate-900 text-white">Export CSV</button>
           <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
+          <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
+          <button onClick={clearAllClips} className="px-3 py-1 rounded bg-white border">Clear Clips</button>
         </div>
+        {mediaInfo.title && (
+          <div className="text-xs text-right ml-4">
+            <div className="font-semibold">{mediaInfo.title}</div>
+            <div>{fmtTime(playheadSec)} / {fmtTime(Math.max(mediaDurationSec - playheadSec,0))} left</div>
+          </div>
+        )}
       </header>
 
       <div className="bg-white rounded p-3 shadow overflow-auto">
@@ -330,7 +449,7 @@ export default function App() {
       </div>
 
       <div className="mb-3 flex items-center gap-2">
-        <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} />
+        <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} onAddSubtype={addSubtype} onUpdateSubtype={updateSubtype} onDeleteSubtype={deleteSubtype} />
       </div>
 
       <Inspector
@@ -369,12 +488,15 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 
   function onClick(e){ const rect = e.currentTarget.getBoundingClientRect(); const x = e.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); onSeek && onSeek(clamp(sec,0,totalSec)); }
 
-  // build mm:ss second grid (labels every 5s)
+  // build second grid with adaptive spacing when zoomed out
   const gridEls = [];
-  const labelStep = 5; // seconds
-  for (let s=0; s<= totalSec; s+=1) {
+  const minLabelPx = 60; // minimum pixels between time labels
+  let labelStep = 5;
+  while (secToPx(labelStep, pxPerBeat) < minLabelPx) labelStep *= 2;
+  const gridStep = Math.max(1, labelStep / 5);
+  for (let s = 0; s <= totalSec; s += gridStep) {
     const x = Math.round(secToPx(s, pxPerBeat));
-    const isLabel = s % labelStep === 0;
+    const isLabel = Math.abs(s % labelStep) < 1e-6;
     gridEls.push(
       <div key={`g-${s}`} style={{ position:'absolute', left: x, top: 0, bottom: 0, width: 1, background: isLabel ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.06)' }} />
     );
@@ -412,8 +534,8 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
   );
 }
 
-function Legend({ subtypes, subtypeTypes }) {
-  const types = ['transition', 'effect'];
+function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype }) {
+  const [manage, setManage] = useState(false);
   return (
     <div className="flex gap-6 items-start w-full justify-between">
       <div className="text-sm">
@@ -424,27 +546,28 @@ function Legend({ subtypes, subtypeTypes }) {
       </div>
 
       <div className="text-sm flex-1">
-        <div className="font-semibold">Markers (Subtypes)</div>
-        <div className="mt-1">
-          {types.map(type => (
-            <div key={type} className="mb-2">
-              <div className="text-xs font-medium mb-1">{type[0].toUpperCase() + type.slice(1)}</div>
-              <div className="flex gap-3 flex-wrap items-center">
-                {Object.keys(subtypes).filter(name => (subtypeTypes[name] || 'transition') === type).map(name => (
-                  <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
-                    {/* shape changes: triangle for effects, square for transitions */}
-                    {type === 'effect' ? (
-                      <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
-                    ) : (
-                      <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
-                    )}
-                    <div className="text-xs">{name}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between">
+          <div className="font-semibold">Markers (Subtypes)</div>
+          <button className="text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
         </div>
+        <div className="mt-1 flex gap-3 flex-wrap items-center">
+          {Object.keys(subtypes).map(name => {
+            const type = subtypeTypes[name] || 'transition';
+            return (
+              <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
+                {type === 'effect' ? (
+                  <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
+                ) : (
+                  <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
+                )}
+                <div className="text-xs">{name}</div>
+              </div>
+            );
+          })}
+        </div>
+        {manage && (
+          <SubtypeManager subtypes={subtypes} subtypeTypes={subtypeTypes} onAdd={onAddSubtype} onUpdate={onUpdateSubtype} onDelete={onDeleteSubtype} />
+        )}
       </div>
 
       <div className="text-sm">
@@ -457,26 +580,62 @@ function Legend({ subtypes, subtypeTypes }) {
   );
 }
 
-function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
+function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState('transition');
+  const [newColor, setNewColor] = useState('#000000');
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2 mb-1">
-        <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
-      </div>
-      <div id={`track-${trackIndex}`} className="relative h-40 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
-        <GridBackground pxPerBeat={pxPerBeat} />
-        {/* Add Clip button pinned to right side */}
-        <button className="px-2 py-1 rounded bg-white border absolute top-2 right-2" onClick={onAdd}>+ Add Clip</button>
-        {children}
+    <div className="mt-2 border-t pt-2">
+      {Object.keys(subtypes).map(name => (
+        <div key={name} className="flex items-center gap-2 mb-1 text-xs">
+          <div className="w-24 truncate">{name}</div>
+          <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={(e)=> onUpdate(name,{ type:e.target.value })}>
+            <option value="transition">Transition</option>
+            <option value="effect">Effect</option>
+          </select>
+          <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={(e)=> onUpdate(name,{ color:e.target.value })} />
+          <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+        </div>
+      ))}
+      <div className="flex items-center gap-2 mt-2 text-xs">
+        <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newName} onChange={(e)=> setNewName(e.target.value)} />
+        <select className="px-1 py-0.5 border rounded" value={newType} onChange={(e)=> setNewType(e.target.value)}>
+          <option value="transition">Transition</option>
+          <option value="effect">Effect</option>
+        </select>
+        <input type="color" className="h-6 w-10" value={newColor} onChange={(e)=> setNewColor(e.target.value)} />
+        <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if (!newName.trim()) return; onAdd(newName.trim(), newType, newColor); setNewName(''); }}>Add</button>
       </div>
     </div>
   );
 }
 
+function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
+  return (
+    <div className="mb-3 flex items-start relative">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
+        </div>
+        <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
+          <GridBackground pxPerBeat={pxPerBeat} />
+          {children}
+        </div>
+      </div>
+      <button className="px-2 py-1 rounded bg-white border sticky top-2 right-2" onClick={onAdd}>+ Add Clip</button>
+    </div>
+  );
+}
+
 function GridBackground({ pxPerBeat }) {
-  const step = Math.max(8, Math.round(pxPerBeat));
-  const phrase = Math.round(pxPerBeat * BEATS_PER_PHRASE);
-  const style = { backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase}px)` };
+  let beatStep = 1;
+  const minPx = 20;
+  while (beatStep * pxPerBeat < minPx) beatStep *= 2;
+  const step = pxPerBeat * beatStep;
+  const phrase = step * BEATS_PER_PHRASE;
+  const style = {
+    backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 2}px, rgba(0,0,0,0.12) ${phrase - 2}px, rgba(0,0,0,0.12) ${phrase}px)`
+  };
   return <div className="absolute inset-0" style={style} />;
 }
 
@@ -502,7 +661,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   function showMarkerHover(e, m) { const typ = m.type === 'transition' ? 'Transition' : 'Effect'; const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : ''; const sr = (m.startSec ?? clip.startSec) - clip.startSec; const er = m.endSec != null ? (m.endSec - clip.startSec) : null; const html = '<div><b>' + typ + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' + detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` + (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>'; onHover({ x: e.clientX, y: e.clientY, html }); }
 
   return (
-    <div className={"absolute top-6 rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+    <div className={"absolute rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
@@ -554,14 +713,15 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
 
   if (!clip) return null;
 
-  function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' or field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
+  function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' || field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
 
   return (
-    <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-2 gap-6">
       <div>
         <div className="text-lg font-semibold mb-2">Clip Inspector</div>
         <div className="grid grid-cols-2 gap-2 text-sm">
           <label className="flex items-center gap-2 col-span-2"><span className="w-28">Name</span><input className="flex-1 px-2 py-1 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
+          <label className="flex items-center gap-2"><span className="w-28">Deck</span><select className="flex-1 px-2 py-1 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-28">Start (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.startSec)} step={0.01} onChange={(e)=> onChange({ startSec: Number(e.target.value) || 0 })} /></label>
           <label className="flex items-center gap-2"><span className="w-28">End (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.endSec)} step={0.01} onChange={(e)=> onChange({ endSec: Number(e.target.value) || 0 })} /></label>
           <div className="col-span-2 text-xs text-slate-600">Duration: {fmtTime(clip.endSec - clip.startSec)} ({fmtSec2((clip.endSec-clip.startSec)/SECS_PER_BEAT)} beats)</div>
