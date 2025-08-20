@@ -132,7 +132,7 @@ export default function App() {
   const lastClipEnd = useMemo(()=> Math.max(0, ...clips.map(c => c.endSec || 0)), [clips]);
   const maxEnd = Math.max(120, mediaDurationSec || 0, lastClipEnd) + DEFAULT_TAIL_PADDING_SEC;
   const timelineWidthPx = Math.ceil(maxEnd * pxPerSec) + 300;
-  const containerRef = useRef(null);
+  const timelineRef = useRef(null);
 
   // playhead + player refs
   const [playheadSec, setPlayheadSec] = useState(0);
@@ -144,7 +144,7 @@ export default function App() {
   const lastRAF = useRef(null);
 
   useEffect(()=>{
-    const el = containerRef.current;
+    const el = timelineRef.current;
     if (!el) return;
     const onWheel = (e) => {
       if (e.ctrlKey) {
@@ -390,8 +390,16 @@ export default function App() {
 
   const playPauseRef = useRef(playPauseToggle);
   playPauseRef.current = playPauseToggle;
+  const deleteRef = useRef(() => {});
+  deleteRef.current = () => {
+    if (selectedMarkerRef) deleteMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId);
+    else if (selectedClipId) deleteClip(selectedClipId);
+  };
   useEffect(() => {
-    const onKey = (e) => { if (e.code === 'Space') { e.preventDefault(); playPauseRef.current(); } };
+    const onKey = (e) => {
+      if (e.code === 'Space') { e.preventDefault(); playPauseRef.current(); }
+      else if (e.key === 'Delete') { e.preventDefault(); deleteRef.current(); }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
@@ -410,29 +418,29 @@ export default function App() {
   const [hover, setHover] = useState(null);
 
   return (
-    <div className="h-screen p-4 bg-slate-50 text-slate-900 flex flex-col overflow-hidden" ref={containerRef}>
-      <header className="flex items-center justify-between mb-3 flex-shrink-0">
-        <h1 className="text-2xl font-bold">DnB Live Set Timeline (v3.2)</h1>
-        <div className="flex gap-2 items-center">
-          <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-2 py-1 border rounded" onBlur={(e)=> attachPlayer(e.target.value)} />
-          <div id="player-container" style={{ width:200 }} />
-          <button onClick={playPauseToggle} className="px-3 py-1 rounded bg-slate-900 text-white">{playing ? 'Pause' : 'Play'}</button>
-          <button onClick={()=> seekTo(0)} className="px-2 py-1 rounded bg-white border">Reset Playhead</button>
-          <button onClick={exportJSON} className="px-3 py-1 rounded bg-slate-900 text-white">Export JSON</button>
-          <button onClick={exportCSV} className="px-3 py-1 rounded bg-slate-900 text-white">Export CSV</button>
-          <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
-          <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
-          <button onClick={clearAllClips} className="px-3 py-1 rounded bg-white border">Clear Clips</button>
+    <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
+      <header className="flex items-center justify-between mb-1 flex-shrink-0 text-xs">
+        <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.2)</h1>
+        <div className="flex gap-1 items-center">
+          <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-1 py-0.5 border rounded text-xs" onBlur={(e)=> attachPlayer(e.target.value)} />
+          <div id="player-container" style={{ width:150 }} />
+          <button onClick={playPauseToggle} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">{playing ? 'Pause' : 'Play'}</button>
+          <button onClick={()=> seekTo(0)} className="px-2 py-1 rounded bg-white border text-xs">Reset</button>
+          <button onClick={exportJSON} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">Export JSON</button>
+          <button onClick={exportCSV} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">Export CSV</button>
+          <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
+          <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
+          <button onClick={clearAllClips} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
         </div>
         {mediaInfo.title && (
-          <div className="text-xs text-right ml-4">
+          <div className="text-[10px] text-right ml-2">
             <div className="font-semibold">{mediaInfo.title}</div>
             <div>{fmtTime(playheadSec)} / {fmtTime(Math.max(mediaDurationSec - playheadSec,0))} left</div>
           </div>
         )}
       </header>
 
-      <div className="bg-white rounded p-3 shadow overflow-x-auto overflow-y-hidden flex-1">
+      <div ref={timelineRef} className="bg-white rounded p-2 shadow overflow-x-auto overflow-y-hidden flex-1">
         {/* Big overall timeline integrated above the tracks */}
         <div style={{ width: timelineWidthPx }} className="mb-2">
           <BigTimelineHeader
@@ -480,7 +488,7 @@ export default function App() {
         </div>
       </div>
 
-      <div className="mb-3 flex items-center gap-2 flex-shrink-0">
+      <div className="mb-2 flex items-center gap-2 flex-shrink-0">
         <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} onAddSubtype={addSubtype} onUpdateSubtype={updateSubtype} onDeleteSubtype={deleteSubtype} />
       </div>
 
@@ -574,32 +582,32 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
   const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
   const markerItems = markerNames.map(n => ({ name: n, type: subtypeTypes[n] || 'transition' }));
   return (
-    <div className="relative w-full border rounded p-3">
-      <button className="absolute top-2 right-2 text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
-      <div className="flex items-start text-sm w-full">
-        <div className="pr-4">
+    <div className="relative w-full border rounded p-2 text-xs">
+      <button className="absolute top-1 right-1 text-[10px] underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
+      <div className="flex items-start w-full">
+        <div className="pr-3">
           <div className="font-semibold">Clips (Subgenre)</div>
-          <div className="flex gap-2 mt-1 flex-wrap">{clipNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name],borderRadius:3}}/><div className="text-xs">{name}</div></div>
+          <div className="flex gap-1 mt-1 flex-wrap">{clipNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
-        <div className="px-4 border-l">
+        <div className="px-3 border-l">
           <div className="font-semibold">Markers (Subtypes)</div>
-          <div className="flex gap-3 flex-wrap items-center mt-1">
+          <div className="flex gap-2 flex-wrap items-center mt-1">
             {markerItems.map(({name,type}) => (
-              <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
+              <div key={name} className="flex items-center gap-1.5 border px-1.5 py-0.5 rounded">
                 {type === 'effect'
-                  ? <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
-                  : <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />}
-                <div className="text-xs">{name}</div>
+                  ? <div style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: `10px solid ${subtypes[name]}` }} />
+                  : <div style={{width:12,height:12,background: subtypes[name],borderRadius:2}} />}
+                <div className="text-[10px]">{name}</div>
               </div>
             ))}
           </div>
         </div>
-        <div className="pl-4 border-l">
+        <div className="pl-3 border-l">
           <div className="font-semibold">Remix (Striped)</div>
-          <div className="flex gap-2 mt-1 flex-wrap">{remixNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{name}</div></div>
+          <div className="flex gap-1 mt-1 flex-wrap">{remixNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
       </div>
@@ -686,16 +694,15 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
 
 function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2 mb-1">
-        <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
+    <div className="mb-1">
+      <div className="flex items-center gap-2 mb-0.5">
+        <div className="px-1.5 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
       </div>
-      <div id={`track-${trackIndex}`} className="relative h-24 rounded-xl border overflow-visible" style={{ width: widthPx }}>
+      <div id={`track-${trackIndex}`} className="relative h-20 rounded-lg border overflow-visible" style={{ width: widthPx }}>
         <GridBackground pxPerBeat={pxPerBeat} />
         {children}
         <button
-          className="sticky top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white border shadow flex items-center justify-center text-lg"
-          style={{ left: 'calc(100% - 2rem)' }}
+          className="sticky right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-white border shadow flex items-center justify-center text-base"
           onClick={onAdd}
         >
           +
@@ -803,24 +810,23 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
   function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' || field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
 
   return (
-    <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-2 gap-6">
+    <div className="mt-2 p-2 bg-white rounded shadow grid grid-cols-2 gap-4 text-xs" onMouseDown={(e)=> e.stopPropagation()}>
       <div>
-        <div className="text-lg font-semibold mb-2">Clip Inspector</div>
-        
-<div className="grid grid-cols-2 gap-2 text-sm">
-          <label className="flex items-center gap-2 col-span-2"><span className="w-28">Name</span><input className="flex-1 px-2 py-1 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Deck</span><select className="flex-1 px-2 py-1 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Camelot</span><input className="flex-1 px-2 py-1 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Subgenre</span><select className="flex-1 px-2 py-1 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Remix</span><select className="flex-1 px-2 py-1 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Energy</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
+        <div className="text-sm font-semibold mb-1">Clip Inspector</div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex items-center gap-2 col-span-2"><span className="w-24">Name</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
+          <label className="flex items-center gap-2"><span className="w-24">Deck</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Camelot</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
+          <label className="flex items-center gap-2"><span className="w-24">Subgenre</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Remix</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Energy</span><input type="number" className="flex-1 px-1 py-0.5 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
         </div>
-        <div className="mt-3">
-<button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
+        <div className="mt-2"><button className="px-2 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
       </div>
 
       <div>
-        <div className="text-lg font-semibold mb-2">Markers (seconds)</div>
+        <div className="text-sm font-semibold mb-1">Markers (seconds)</div>
         <MarkerEditor
           clip={clip}
           selectedMarkerRef={selectedMarkerRef}
@@ -888,7 +894,7 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
 
 function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   const width = Math.ceil(seconds * pxPerSec);
-  const height = 160;
+  const height = 120;
   const energyPath = seriesToPath(energySeries, width, height/2, 0);
   const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height/2, height/2);
 
