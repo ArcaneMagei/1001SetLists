@@ -148,27 +148,6 @@ export default function App() {
     const el = containerRef.current; if (!el) return; const onWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; setZoom(z=>clamp(z*factor, MIN_ZOOM, MAX_ZOOM)); } }; el.addEventListener('wheel', onWheel, { passive:false }); return ()=> el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const overlapSegments = useMemo(()=> {
-    const segs = [];
-    for (let i=0;i<clips.length;i++){
-      for (let j=i+1;j<clips.length;j++){
-        const a = clips[i], b = clips[j];
-        if (a.track === b.track) continue;
-        const start = Math.max(a.startSec, b.startSec);
-        const end = Math.min(a.endSec, b.endSec);
-        if (start < end) {
-          segs.push({
-            startSec: start,
-            endSec: end,
-            tracks: [a.track, b.track],
-            colorA: subtypes[a.subgenre] || a.baseColor,
-            colorB: subtypes[b.subgenre] || b.baseColor,
-          });
-        }
-      }
-    }
-    return segs;
-  }, [clips, subtypes]);
 
   // migrate any legacy marker beat fields into seconds relative to clip
   useEffect(()=>{
@@ -452,16 +431,6 @@ export default function App() {
             {/* Playhead line */}
             <div onMouseDown={(e)=> onPlayheadMouseDown(e, pxPerBeat, maxEnd, setPlayheadSec)} title={`Playhead: ${fmtTime(playheadSec)} (${fmtSec2(playheadSec)}s)`} style={{ position:'absolute', left: secToPx(playheadSec, pxPerBeat), top:0, bottom:0, width:2, background:'red', zIndex:120 }} />
 
-            {overlapSegments.map((seg,i)=> {
-              const left = secToPx(seg.startSec, pxPerBeat);
-              const width = Math.max(2, secToPx(seg.endSec - seg.startSec, pxPerBeat));
-              const top = Math.min(...seg.tracks)*(TRACK_HEIGHT_PX+ROW_GAP_PX)+TRACK_HEIGHT_PX;
-              const bottom = Math.max(...seg.tracks)*(TRACK_HEIGHT_PX+ROW_GAP_PX);
-              const height = bottom - top;
-              const bg = `linear-gradient(to bottom, ${seg.colorA}, ${seg.colorB})`;
-              return <div key={i} style={{position:'absolute', left, top, width, height, background:bg, opacity:0.4, pointerEvents:'none'}} />;
-            })}
-
             {Array.from({ length: 4 }).map((_, t) => (
               <TrackRow key={t} trackIndex={t} pxPerBeat={pxPerBeat} widthPx={timelineWidthPx} onAdd={() => addClip(t)}>
                 {clips.filter(c => c.track === t).sort((a,b)=>a.startSec-b.startSec).map(clip => (
@@ -626,34 +595,73 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
 
 
 function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
-  const [newName, setNewName] = useState('');
-  const [newType, setNewType] = useState('transition');
-  const [newColor, setNewColor] = useState('#000000');
+  const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
+  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
+  const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
+
+  const [newClip, setNewClip] = useState({ name: '', color: '#000000' });
+  const [newMarker, setNewMarker] = useState({ name: '', type: 'transition', color: '#000000' });
+  const [newRemix, setNewRemix] = useState({ name: '', color: '#000000' });
+
   return (
-    <div className="mt-2 border-t pt-2">
-      {Object.keys(subtypes).map(name => (
-        <div key={name} className="flex items-center gap-2 mb-1 text-xs">
-          <div className="w-24 truncate">{name}</div>
-          <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={(e)=> onUpdate(name,{ type:e.target.value })}>
+    <div className="mt-2 border-t pt-2 grid grid-cols-3 gap-4 text-xs">
+      {/* Clip subgenres */}
+      <div>
+        <div className="font-semibold mb-1">Clips</div>
+        {clipNames.map(name => (
+          <div key={name} className="flex items-center gap-2 mb-1">
+            <div className="w-24 truncate">{name}</div>
+            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2 mt-2">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newClip.name} onChange={e=> setNewClip({ ...newClip, name:e.target.value })} />
+          <input type="color" className="h-6 w-10" value={newClip.color} onChange={e=> setNewClip({ ...newClip, color:e.target.value })} />
+          <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newClip.name.trim()) return; onAdd(newClip.name.trim(),'clip',newClip.color); setNewClip({ name:'', color:'#000000' }); }}>Add</button>
+        </div>
+      </div>
+
+      {/* Marker subtypes */}
+      <div>
+        <div className="font-semibold mb-1">Markers</div>
+        {markerNames.map(name => (
+          <div key={name} className="flex items-center gap-2 mb-1">
+            <div className="w-24 truncate">{name}</div>
+            <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={e=> onUpdate(name,{ type:e.target.value })}>
+              <option value="transition">Transition</option>
+              <option value="effect">Effect</option>
+            </select>
+            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2 mt-2">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newMarker.name} onChange={e=> setNewMarker({ ...newMarker, name:e.target.value })} />
+          <select className="px-1 py-0.5 border rounded" value={newMarker.type} onChange={e=> setNewMarker({ ...newMarker, type:e.target.value })}>
             <option value="transition">Transition</option>
             <option value="effect">Effect</option>
-            <option value="clip">Clip</option>
-            <option value="remix">Remix</option>
           </select>
-          <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={(e)=> onUpdate(name,{ color:e.target.value })} />
-          <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+          <input type="color" className="h-6 w-10" value={newMarker.color} onChange={e=> setNewMarker({ ...newMarker, color:e.target.value })} />
+          <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newMarker.name.trim()) return; onAdd(newMarker.name.trim(), newMarker.type, newMarker.color); setNewMarker({ name:'', type:'transition', color:'#000000' }); }}>Add</button>
         </div>
-      ))}
-      <div className="flex items-center gap-2 mt-2 text-xs">
-        <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newName} onChange={(e)=> setNewName(e.target.value)} />
-        <select className="px-1 py-0.5 border rounded" value={newType} onChange={(e)=> setNewType(e.target.value)}>
-          <option value="transition">Transition</option>
-          <option value="effect">Effect</option>
-          <option value="clip">Clip</option>
-          <option value="remix">Remix</option>
-        </select>
-        <input type="color" className="h-6 w-10" value={newColor} onChange={(e)=> setNewColor(e.target.value)} />
-        <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if (!newName.trim()) return; onAdd(newName.trim(), newType, newColor); setNewName(''); }}>Add</button>
+      </div>
+
+      {/* Remix types */}
+      <div>
+        <div className="font-semibold mb-1">Remix</div>
+        {remixNames.map(name => (
+          <div key={name} className="flex items-center gap-2 mb-1">
+            <div className="w-24 truncate">{name}</div>
+            <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+          </div>
+        ))}
+        <div className="flex items-center gap-2 mt-2">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newRemix.name} onChange={e=> setNewRemix({ ...newRemix, name:e.target.value })} />
+          <input type="color" className="h-6 w-10" value={newRemix.color} onChange={e=> setNewRemix({ ...newRemix, color:e.target.value })} />
+          <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newRemix.name.trim()) return; onAdd(newRemix.name.trim(),'remix',newRemix.color); setNewRemix({ name:'', color:'#000000' }); }}>Add</button>
+        </div>
       </div>
     </div>
   );
