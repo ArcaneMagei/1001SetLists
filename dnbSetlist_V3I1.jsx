@@ -83,10 +83,22 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const pxPerBeat = BASE_PX_PER_BEAT * zoom;
   const pxPerSec = pxPerBeat / SECS_PER_BEAT;
+  const TRACK_HEIGHT_PX = 112;
+  const ROW_GAP_PX = 12;
 
   // subtype colors (user-manageable)
-  const initialSubtypes = useMemo(()=> ({ ...TRANSITION_COLORS, ...EFFECT_COLORS }), []);
-  const initialSubtypeTypes = useMemo(()=> ({ ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])), ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])) }), []);
+  const initialSubtypes = useMemo(()=> ({
+    ...TRANSITION_COLORS,
+    ...EFFECT_COLORS,
+    ...SUBGENRE_COLORS,
+    ...REMIX_COLORS,
+  }), []);
+  const initialSubtypeTypes = useMemo(()=> ({
+    ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])),
+    ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])),
+    ...Object.fromEntries(Object.keys(SUBGENRE_COLORS).map(k=>[k,'clip'])),
+    ...Object.fromEntries(Object.keys(REMIX_COLORS).map(k=>[k,'remix'])),
+  }), []);
   const [subtypes, setSubtypes] = useState(() => {
     const saved = localStorage.getItem('dnb_subtypes_v1');
     if (saved) { try { return JSON.parse(saved); } catch{} }
@@ -136,6 +148,28 @@ export default function App() {
     const el = containerRef.current; if (!el) return; const onWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; setZoom(z=>clamp(z*factor, MIN_ZOOM, MAX_ZOOM)); } }; el.addEventListener('wheel', onWheel, { passive:false }); return ()=> el.removeEventListener('wheel', onWheel);
   }, []);
 
+  const overlapSegments = useMemo(()=> {
+    const segs = [];
+    for (let i=0;i<clips.length;i++){
+      for (let j=i+1;j<clips.length;j++){
+        const a = clips[i], b = clips[j];
+        if (a.track === b.track) continue;
+        const start = Math.max(a.startSec, b.startSec);
+        const end = Math.min(a.endSec, b.endSec);
+        if (start < end) {
+          segs.push({
+            startSec: start,
+            endSec: end,
+            tracks: [a.track, b.track],
+            colorA: subtypes[a.subgenre] || a.baseColor,
+            colorB: subtypes[b.subgenre] || b.baseColor,
+          });
+        }
+      }
+    }
+    return segs;
+  }, [clips, subtypes]);
+
   // migrate any legacy marker beat fields into seconds relative to clip
   useEffect(()=>{
     setClips(prev => prev.map(c => ({ ...c, markers: (c.markers||[]).map(m => {
@@ -146,7 +180,7 @@ export default function App() {
   }, []);
 
   function addClip(track) {
-    const trackClips = clips.filter(c=>c.track===track); const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0); const gap = 1; const startSec = lastEndT>0? lastEndT+gap : 0; const endSec = startSec + SECS_PER_BEAT * BEATS_PER_PHRASE; const clip = { id: uid('clip'), track, name: 'New Clip', startSec, endSec, baseColor: '#3b82f6', remixType: 'None', camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, markers: [] };
+    const trackClips = clips.filter(c=>c.track===track); const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0); const gap = 1; const startSec = lastEndT>0? lastEndT+gap : 0; const endSec = startSec + SECS_PER_BEAT * BEATS_PER_PHRASE; const clip = { id: uid('clip'), track, name: 'New Clip', startSec, endSec, baseColor: subtypes['Liquid'] || '#3b82f6', remixType: 'None', camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, markers: [] };
     if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); } else alert('Cannot insert: overlaps an existing clip on this track.');
   }
 
@@ -231,7 +265,7 @@ export default function App() {
         if (!m) continue;
         const startSec = Number(m[1])*60 + Number(m[2]);
         const name = m[3];
-        newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor:'#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, markers:[] });
+        newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor: subtypes['Liquid'] || '#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, markers:[] });
       }
       newClips.sort((a,b)=> a.startSec - b.startSec);
       // adjust end times based on next start if not overlapping
@@ -418,6 +452,16 @@ export default function App() {
             {/* Playhead line */}
             <div onMouseDown={(e)=> onPlayheadMouseDown(e, pxPerBeat, maxEnd, setPlayheadSec)} title={`Playhead: ${fmtTime(playheadSec)} (${fmtSec2(playheadSec)}s)`} style={{ position:'absolute', left: secToPx(playheadSec, pxPerBeat), top:0, bottom:0, width:2, background:'red', zIndex:120 }} />
 
+            {overlapSegments.map((seg,i)=> {
+              const left = secToPx(seg.startSec, pxPerBeat);
+              const width = Math.max(2, secToPx(seg.endSec - seg.startSec, pxPerBeat));
+              const top = Math.min(...seg.tracks)*(TRACK_HEIGHT_PX+ROW_GAP_PX)+TRACK_HEIGHT_PX;
+              const bottom = Math.max(...seg.tracks)*(TRACK_HEIGHT_PX+ROW_GAP_PX);
+              const height = bottom - top;
+              const bg = `linear-gradient(to bottom, ${seg.colorA}, ${seg.colorB})`;
+              return <div key={i} style={{position:'absolute', left, top, width, height, background:bg, opacity:0.4, pointerEvents:'none'}} />;
+            })}
+
             {Array.from({ length: 4 }).map((_, t) => (
               <TrackRow key={t} trackIndex={t} pxPerBeat={pxPerBeat} widthPx={timelineWidthPx} onAdd={() => addClip(t)}>
                 {clips.filter(c => c.track === t).sort((a,b)=>a.startSec-b.startSec).map(clip => (
@@ -534,25 +578,26 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
   );
 }
 
+
 function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype }) {
   const [manage, setManage] = useState(false);
+  const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
+  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
+  const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
   return (
-    <div className="flex gap-6 items-start w-full justify-between">
-      <div className="text-sm">
-        <div className="font-semibold">Clips (Subgenre)</div>
-        <div className="flex gap-2 mt-1">{Object.entries(SUBGENRE_COLORS).map(([k,v]) => (
-          <div key={k} className="flex items-center gap-1"><div style={{width:12,height:12,background:v,borderRadius:3}}/><div className="text-xs">{k}</div></div>
-        ))}</div>
-      </div>
-
-      <div className="text-sm flex-1">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">Markers (Subtypes)</div>
-          <button className="text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
+    <div className="relative w-full border rounded p-3">
+      <button className="absolute top-2 right-2 text-xs underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
+      <div className="text-sm flex flex-col gap-2">
+        <div>
+          <div className="font-semibold">Clips (Subgenre)</div>
+          <div className="flex gap-2 mt-1 flex-wrap">{clipNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name],borderRadius:3}}/><div className="text-xs">{name}</div></div>
+          ))}</div>
         </div>
-        <div className="mt-1 flex gap-3 flex-wrap items-center">
-          {Object.keys(subtypes).map(name => {
-            const type = subtypeTypes[name] || 'transition';
+        <div className="border-t pt-2">
+          <div className="font-semibold">Markers</div>
+          <div className="mt-1 flex gap-3 flex-wrap items-center">{markerNames.map(name => {
+            const type = subtypeTypes[name];
             return (
               <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
                 {type === 'effect' ? (
@@ -563,22 +608,22 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
                 <div className="text-xs">{name}</div>
               </div>
             );
-          })}
+          })}</div>
         </div>
-        {manage && (
-          <SubtypeManager subtypes={subtypes} subtypeTypes={subtypeTypes} onAdd={onAddSubtype} onUpdate={onUpdateSubtype} onDelete={onDeleteSubtype} />
-        )}
+        <div className="border-t pt-2">
+          <div className="font-semibold">Remix (Striped)</div>
+          <div className="flex gap-2 mt-1 flex-wrap">{remixNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:12,height:12,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{name}</div></div>
+          ))}</div>
+        </div>
       </div>
-
-      <div className="text-sm">
-        <div className="font-semibold">Remix (Striped)</div>
-        <div className="flex gap-2 mt-1">{Object.entries(REMIX_COLORS).map(([k,v]) => (
-          <div key={k} className="flex items-center gap-1"><div style={{width:12,height:12,background: v ? `repeating-linear-gradient(45deg, ${v}, ${v} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{k}</div></div>
-        ))}</div>
-      </div>
+      {manage && (
+        <SubtypeManager subtypes={subtypes} subtypeTypes={subtypeTypes} onAdd={onAddSubtype} onUpdate={onUpdateSubtype} onDelete={onDeleteSubtype} />
+      )}
     </div>
   );
 }
+
 
 function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
   const [newName, setNewName] = useState('');
@@ -592,6 +637,8 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
           <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={(e)=> onUpdate(name,{ type:e.target.value })}>
             <option value="transition">Transition</option>
             <option value="effect">Effect</option>
+            <option value="clip">Clip</option>
+            <option value="remix">Remix</option>
           </select>
           <input type="color" className="h-6 w-10" value={subtypes[name]} onChange={(e)=> onUpdate(name,{ color:e.target.value })} />
           <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
@@ -602,6 +649,8 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
         <select className="px-1 py-0.5 border rounded" value={newType} onChange={(e)=> setNewType(e.target.value)}>
           <option value="transition">Transition</option>
           <option value="effect">Effect</option>
+          <option value="clip">Clip</option>
+          <option value="remix">Remix</option>
         </select>
         <input type="color" className="h-6 w-10" value={newColor} onChange={(e)=> setNewColor(e.target.value)} />
         <button className="px-2 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if (!newName.trim()) return; onAdd(newName.trim(), newType, newColor); setNewName(''); }}>Add</button>
@@ -642,8 +691,9 @@ function GridBackground({ pxPerBeat }) {
 function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onAddMarker, onUpdateMarker, onDeleteMarker, onHover, onClearHover, onSelectMarker, selectedMarkerRef, subtypeTypes, subtypes }) {
   const left = secToPx(clip.startSec, pxPerBeat);
   const width = Math.max(4, secToPx(clip.endSec - clip.startSec, pxPerBeat));
-  const stripe = REMIX_COLORS[clip.remixType] || '';
-  const bg = stripe ? `repeating-linear-gradient(45deg, ${clip.baseColor}, ${clip.baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : clip.baseColor;
+  const baseColor = subtypes[clip.subgenre] || clip.baseColor;
+  const stripe = subtypes[clip.remixType] || '';
+  const bg = stripe ? `repeating-linear-gradient(45deg, ${baseColor}, ${baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : baseColor;
 
   function startDrag(e) { e.stopPropagation(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
@@ -719,20 +769,17 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
     <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-2 gap-6">
       <div>
         <div className="text-lg font-semibold mb-2">Clip Inspector</div>
-        <div className="grid grid-cols-2 gap-2 text-sm">
+        
+<div className="grid grid-cols-2 gap-2 text-sm">
           <label className="flex items-center gap-2 col-span-2"><span className="w-28">Name</span><input className="flex-1 px-2 py-1 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
           <label className="flex items-center gap-2"><span className="w-28">Deck</span><select className="flex-1 px-2 py-1 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Start (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.startSec)} step={0.01} onChange={(e)=> onChange({ startSec: Number(e.target.value) || 0 })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">End (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.endSec)} step={0.01} onChange={(e)=> onChange({ endSec: Number(e.target.value) || 0 })} /></label>
-          <div className="col-span-2 text-xs text-slate-600">Duration: {fmtTime(clip.endSec - clip.startSec)} ({fmtSec2((clip.endSec-clip.startSec)/SECS_PER_BEAT)} beats)</div>
           <label className="flex items-center gap-2"><span className="w-28">Camelot</span><input className="flex-1 px-2 py-1 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Genre</span><input className="flex-1 px-2 py-1 border rounded" value={clip.genre||''} onChange={(e)=> onChange({ genre: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Subgenre</span><select className="flex-1 px-2 py-1 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value, baseColor: SUBGENRE_COLORS[e.target.value] || clip.baseColor })}><option value="">(custom)</option>{Object.keys(SUBGENRE_COLORS).map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Base Color</span><input type="color" className="h-8 w-16" value={clip.baseColor} onChange={(e)=> onChange({ baseColor: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Remix</span><select className="flex-1 px-2 py-1 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(REMIX_COLORS).map(k => <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-28">Subgenre</span><select className="flex-1 px-2 py-1 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-28">Remix</span><select className="flex-1 px-2 py-1 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-28">Energy</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
         </div>
-        <div className="mt-3"><button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
+        <div className="mt-3">
+<button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
       </div>
 
       <div>
@@ -783,17 +830,6 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
         <label className="flex items-center gap-2"><span className="w-20">Color</span><input type="color" className="h-8 w-16" value={(draft.subtype && subtypes[draft.subtype]) || draft.color || '#000000'} disabled /></label>
         <label className="flex items-center gap-2"><span className="w-20">Start (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={fmtSec2(draft.startSec)} onChange={(e)=> updateField('startSec', Math.max(0, Number(e.target.value||0)))} /></label>
         <label className="flex items-center gap-2"><span className="w-20">End (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={draft.endSec == null ? '' : fmtSec2(draft.endSec)} onChange={(e)=> updateField('endSec', e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)))} /></label>
-      </div>
-      <div className="mt-2 flex gap-2">
-        <button className="px-3 py-1 bg-slate-900 text-white rounded" onClick={()=> {
-          const m = { id: uid('m'), type: draft.type, subtype: draft.subtype, label: draft.label, details: draft.details || '', color: (draft.subtype && subtypes[draft.subtype]) || draft.color, startSec: Math.max(clip.startSec, Number(draft.startSec||clip.startSec)) };
-          if (draft.endSec != null) m.endSec = Math.max(m.startSec, Number(draft.endSec));
-          onAddMarker(m);
-        }}>+ Add Marker</button>
-
-        {selectedMarkerRef && <button className="px-3 py-1 bg-amber-600 text-white rounded" onClick={()=> { const sm = selectedMarkerRef; onUpdateMarker(sm.clipId, sm.markerId, { type: draft.type, subtype: draft.subtype, label: draft.label, details: draft.details || '', color: (draft.subtype && subtypes[draft.subtype]) || draft.color, startSec: Number(draft.startSec), endSec: draft.endSec != null ? Math.max(Number(draft.endSec), Number(draft.startSec||0)) : undefined }); }}>Update Marker</button>}
-
-        {selectedMarkerRef && <button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> { const sm = selectedMarkerRef; onDeleteMarker(sm.clipId, sm.markerId); }}>Delete Marker</button>}
       </div>
 
       <div className="mt-4">
