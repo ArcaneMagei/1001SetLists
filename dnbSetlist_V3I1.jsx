@@ -83,7 +83,6 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const pxPerBeat = BASE_PX_PER_BEAT * zoom;
   const pxPerSec = pxPerBeat / SECS_PER_BEAT;
-  const TRACK_HEIGHT_PX = 112;
   const ROW_GAP_PX = 12;
 
   // subtype colors (user-manageable)
@@ -145,8 +144,24 @@ export default function App() {
   const lastRAF = useRef(null);
 
   useEffect(()=>{
-    const el = containerRef.current; if (!el) return; const onWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; setZoom(z=>clamp(z*factor, MIN_ZOOM, MAX_ZOOM)); } }; el.addEventListener('wheel', onWheel, { passive:false }); return ()=> el.removeEventListener('wheel', onWheel);
-  }, []);
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const rect = el.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const timeAtPointer = (el.scrollLeft + mouseX) / pxPerSec;
+        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
+        const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
+        setZoom(newZoom);
+        el.scrollLeft = timeAtPointer * newPxPerSec - mouseX;
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive:false });
+    return ()=> el.removeEventListener('wheel', onWheel);
+  }, [zoom, pxPerSec]);
 
 
   // migrate any legacy marker beat fields into seconds relative to clip
@@ -173,8 +188,12 @@ export default function App() {
       const others = prev.filter((_,i)=>i!==idx);
       if (!noOverlap(updated, others)) return prev;
       if (patch.startSec != null && patch.startSec !== current.startSec) {
-        const delta = patch.startSec - current.startSec;
-        updated.markers = (current.markers||[]).map(m => ({ ...m, startSec: m.startSec + delta, endSec: m.endSec != null ? m.endSec + delta : undefined }));
+        const delta = updated.startSec - current.startSec;
+        updated.markers = (current.markers||[]).map(m => ({
+          ...m,
+          startSec: m.startSec + delta,
+          endSec: m.endSec != null ? m.endSec + delta : undefined
+        }));
       }
       const copy = [...prev]; copy[idx]=updated; return copy;
     });
@@ -413,7 +432,7 @@ export default function App() {
         )}
       </header>
 
-      <div className="bg-white rounded p-3 shadow overflow-auto flex-1">
+      <div className="bg-white rounded p-3 shadow overflow-x-auto overflow-y-hidden flex-1">
         {/* Big overall timeline integrated above the tracks */}
         <div style={{ width: timelineWidthPx }} className="mb-2">
           <BigTimelineHeader
@@ -454,7 +473,7 @@ export default function App() {
           </div>
 
           {/* Graph below deck 4 */}
-          <div className="mt-4">
+          <div className="mt-2">
             <h3 className="text-sm font-semibold mb-2">Energy & Camelot</h3>
             <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} />
           </div>
@@ -671,11 +690,12 @@ function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
       <div className="flex items-center gap-2 mb-1">
         <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
       </div>
-      <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
+      <div id={`track-${trackIndex}`} className="relative h-24 rounded-xl border overflow-visible" style={{ width: widthPx }}>
         <GridBackground pxPerBeat={pxPerBeat} />
         {children}
         <button
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white border shadow flex items-center justify-center text-lg"
+          className="sticky top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white border shadow flex items-center justify-center text-lg"
+          style={{ left: 'calc(100% - 2rem)' }}
           onClick={onAdd}
         >
           +
@@ -713,7 +733,15 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   function startDragMarker(e, m, mode) {
     e.stopPropagation(); const startX = e.clientX; const startStartSec = m.startSec != null ? m.startSec : (clip.startSec); const startEndSec = m.endSec != null ? m.endSec : startStartSec; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const dxPx = ev.clientX - startX; const dxSec = pxToSec(dxPx, pxPerBeat); if (mode === 'body') { let ns = startStartSec + dxSec; let ne = startEndSec + dxSec; ns = clamp(ns, clip.startSec, clip.endSec); ne = clamp(ne, ns, clip.endSec); onUpdateMarker(m.id, { startSec: ns, endSec: m.endSec != null ? ne : undefined }); } else if (mode === 'left') { let ns = startStartSec + dxSec; ns = clamp(ns, clip.startSec, m.endSec != null ? m.endSec : startEndSec); onUpdateMarker(m.id, { startSec: ns }); } else if (mode === 'right') { let ne = startEndSec + dxSec; ne = clamp(ne, m.startSec != null ? m.startSec : clip.startSec, clip.endSec); onUpdateMarker(m.id, { endSec: ne }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
-  function insertMarkerAtClick(e) { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); const x = e.clientX - rect.left - left; const secRel = Math.max(0, pxToSec(x, pxPerBeat)); const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || null; const m = { id: uid('m'), type: 'transition', subtype: defaultSubtype, label: '', details: '', startSec: clip.startSec + secRel }; onAddMarker(m); }
+  function insertMarkerAtClick(e) {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const secRel = Math.max(0, pxToSec(x, pxPerBeat));
+    const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || null;
+    const m = { id: uid('m'), type: 'transition', subtype: defaultSubtype, label: '', details: '', startSec: clip.startSec + secRel };
+    onAddMarker(m);
+  }
 
   function showClipHover(e) { const html = '<div><b>' + escapeHtml(clip.name) + '</b></div>' + '<div>' + escapeHtml(clip.genre||'') + (clip.subgenre ? ' / ' + escapeHtml(clip.subgenre) : '') + '</div>' + (clip.energy ? ('<div>Energy: ' + escapeHtml(String(clip.energy)) + '</div>') : '') + (clip.remixType && clip.remixType !== 'None' ? ('<div>Remix: ' + escapeHtml(clip.remixType) + '</div>') : ''); onHover({ x: e.clientX, y: e.clientY, html }); }
 
