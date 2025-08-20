@@ -174,8 +174,18 @@ export default function App() {
   }, []);
 
   function addClip(track) {
-    const trackClips = clips.filter(c=>c.track===track); const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0); const gap = 1; const startSec = lastEndT>0? lastEndT+gap : 0; const endSec = startSec + SECS_PER_BEAT * BEATS_PER_PHRASE; const clip = { id: uid('clip'), track, name: 'New Clip', startSec, endSec, baseColor: subtypes['Liquid'] || '#3b82f6', remixType: 'None', camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, markers: [] };
-    if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); } else alert('Cannot insert: overlaps an existing clip on this track.');
+    const trackClips = clips.filter(c=>c.track===track);
+    const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0);
+    const gap = 1;
+    const startSec = lastEndT>0? lastEndT+gap : 0;
+    const endSec = startSec + 90; // default length 90s so new clips are sizeable
+    const clip = {
+      id: uid('clip'), track, name: 'New Clip', startSec, endSec,
+      baseColor: subtypes['Liquid'] || '#3b82f6', remixType: 'None',
+      camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, markers: []
+    };
+    if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); }
+    else alert('Cannot insert: overlaps an existing clip on this track.');
   }
 
   function updateClip(id, patch) {
@@ -321,7 +331,13 @@ export default function App() {
     } else if (/soundcloud.com/.test(link)) {
       playerTypeRef.current = 'soundcloud';
       loadSoundCloudAPI(()=>{
-        const iframe = document.createElement('iframe'); iframe.id = uid('sc'); iframe.width='100%'; iframe.height='60'; iframe.style.display='block'; iframe.src = 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(link) + '&color=%23ff5500'; el.appendChild(iframe);
+        const iframe = document.createElement('iframe');
+        iframe.id = uid('sc');
+        iframe.width='40';
+        iframe.height='20';
+        iframe.style.display='block';
+        iframe.src = 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(link) + '&color=%23ff5500';
+        el.appendChild(iframe);
         const widget = window.SC.Widget(iframe);
         playerRef.current = widget;
         playerReadyRef.current = true;
@@ -582,8 +598,8 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
   const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
   const markerItems = markerNames.map(n => ({ name: n, type: subtypeTypes[n] || 'transition' }));
   return (
-    <div className="relative w-full border rounded p-2 text-xs">
-      <button className="absolute top-1 right-1 text-[10px] underline" onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
+    <div className="relative w-full border rounded p-2 text-xs" onMouseDown={(e)=> e.stopPropagation()}>
+      <button className="absolute top-1 right-1 text-[10px] underline" onMouseDown={(e)=> e.stopPropagation()} onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
       <div className="flex items-start w-full">
         <div className="pr-3">
           <div className="font-semibold">Clips (Subgenre)</div>
@@ -693,21 +709,33 @@ function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
 }
 
 function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
+  const rowRef = useRef(null);
+  const [btnTop, setBtnTop] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      const rect = rowRef.current?.getBoundingClientRect();
+      if (rect) setBtnTop(rect.top + rect.height / 2);
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
   return (
-    <div className="mb-1">
+    <div className="mb-1" ref={rowRef}>
       <div className="flex items-center gap-2 mb-0.5">
         <div className="px-1.5 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
       </div>
       <div id={`track-${trackIndex}`} className="relative h-20 rounded-lg border overflow-visible" style={{ width: widthPx }}>
         <GridBackground pxPerBeat={pxPerBeat} />
         {children}
-        <button
-          className="sticky right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-white border shadow flex items-center justify-center text-base"
-          onClick={onAdd}
-        >
-          +
-        </button>
       </div>
+      <button
+        className="fixed right-2 w-6 h-6 rounded-full bg-white border shadow flex items-center justify-center text-base"
+        style={{ top: btnTop }}
+        onClick={onAdd}
+      >
+        +
+      </button>
     </div>
   );
 }
@@ -872,7 +900,7 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
         <label className="col-span-2 flex items-center gap-2"><span className="w-20">Details</span><textarea rows={3} className="flex-1 px-2 py-1 border rounded" value={draft.details} onChange={(e)=> updateField('details', e.target.value)} /></label>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-4 h-32 overflow-y-auto pr-1">
         <div className="font-semibold text-sm mb-2">Existing</div>
         {(clip.markers||[]).map(m => (
           <div key={m.id} className="flex items-center gap-2 text-sm mb-1">
