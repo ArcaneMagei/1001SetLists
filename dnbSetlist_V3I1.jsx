@@ -15,13 +15,16 @@ const DEFAULT_TAIL_PADDING_SEC = 10;
 const ICON_SIZE = 12;
 
 const PHRASE_COLORS = {
-  Intro: "#6b7280",
-  Verse: "#3b82f6",
-  Buildup: "#f59e0b",
-  "Drop 1": "#ef4444",
-  "Drop 2": "#b91c1c",
-  "Verse/Drop": "#10b981",
-  Breakdown: "#8b5cf6",
+  Intro: "#ffff00",            // yellow
+  Verse: "#d8b4fe",            // lighter purple
+  Buildup: "#ffa500",          // orange
+  "Drop 1": "#ff0000",       // red
+  "Drop 4x4": "#ff00ff",     // neon pink
+  "Drop 2": "#8b0000",       // darker red
+  "Drop fake": "#39ff14",    // neon green
+  "Drop/Verse": "#ff6666",   // lighter red
+  Breakdown: "#00ff00",        // green
+  Outro: "#0000ff",            // blue
 };
 
 const SUBGENRE_COLORS = {
@@ -176,7 +179,7 @@ export default function App() {
         const rect = el.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const timeAtPointer = (el.scrollLeft + mouseX) / pxPerSec;
-        const factor = Math.exp(-e.deltaY / 500);
+        const factor = Math.exp(-e.deltaY / 2000);
         const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
         const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
         setZoom(newZoom);
@@ -286,8 +289,11 @@ export default function App() {
       const res = await fetch(`https://api.getsongbpm.com/search/?api_key=${SONGBPM_API_KEY}&type=track&lookup=${encodeURIComponent(name)}`);
       const json = await res.json();
       const track = json.search && json.search[0];
-      if (track) {
-        return { camelot: track.key || '', subgenre: track.genre || '' };
+      if (track && track.id) {
+        const detRes = await fetch(`https://api.getsongbpm.com/song/?api_key=${SONGBPM_API_KEY}&id=${track.id}`);
+        const detJson = await detRes.json();
+        const song = detJson.song || {};
+        return { camelot: (song.camelot || song.key || '').toUpperCase(), subgenre: song.genre || '' };
       }
     } catch (e) {
       console.error('Metadata fetch failed', e);
@@ -874,7 +880,12 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
     <div className={"absolute rounded-xl border shadow-inner select-none" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
-      {phraseColor && <div className="absolute left-0 top-0 bottom-0" style={{ width:4, background: phraseColor }} />}
+      {phraseColor && (
+        <div
+          className="absolute left-0 top-0 bottom-0"
+          style={{ width:8, background: phraseColor, boxShadow:'0 0 0 1px rgba(0,0,0,0.6)' }}
+        />
+      )}
 
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
         <div className="flex items-center justify-between text-sm font-semibold"><span className="truncate mr-2">{clip.name}</span>{clip.camelot && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: CAMELOT_COLORS[clip.camelot] || 'rgba(0,0,0,0.3)', color:'#fff' }}>{clip.camelot}</span>}</div>
