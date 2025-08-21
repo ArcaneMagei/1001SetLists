@@ -92,7 +92,33 @@ function seriesToPath(series, width, height, yOffset) { if (!series || series.le
 function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
 
 function buildDemo() {
-  const mk = (track, name, start, end, sub, remix, camelot, energy, phrase = 'Intro') => ({ id: uid('clip'), track, name, startSec: start, endSec: end, baseColor: SUBGENRE_COLORS[sub] || '#3b82f6', remixType: remix, camelot, genre: 'DnB', subgenre: sub, energy, phrase, markers: [] });
+  const mk = (
+    track,
+    name,
+    start,
+    end,
+    sub,
+    remix,
+    camelot,
+    energy,
+    phrase = 'Buildup',
+    endPhrase = 'Buildup'
+  ) => ({
+    id: uid('clip'),
+    track,
+    name,
+    startSec: start,
+    endSec: end,
+    baseColor: SUBGENRE_COLORS[sub] || '#3b82f6',
+    remixType: remix,
+    camelot,
+    genre: 'DnB',
+    subgenre: sub,
+    energy,
+    phrase,
+    endPhrase,
+    markers: []
+  });
   return [ mk(0,'Breakbeat Era',2,18,'Liquid','VIP','8A',5), mk(1,'Headcannon (VIP)',10,28,'Neurofunk','Dub','9A',7), mk(2,'City Lights',22,40,'Liquid','None','10A',4), mk(3,'Jungle Tekno',33,50,'Jungle','Genre Flip','11A',6) ];
 }
 
@@ -133,7 +159,11 @@ export default function App() {
     const saved = localStorage.getItem('dnb_timeline_v2');
     if (saved) {
       try {
-        return JSON.parse(saved).map(c => ({ ...c, phrase: c.phrase || 'Intro' }));
+        return JSON.parse(saved).map(c => ({
+          ...c,
+          phrase: c.phrase || 'Buildup',
+          endPhrase: c.endPhrase || c.phrase || 'Buildup'
+        }));
       } catch {}
     }
     return buildDemo();
@@ -226,7 +256,8 @@ export default function App() {
     const clip = {
       id: uid('clip'), track, name: 'New Clip', startSec, endSec,
       baseColor: subtypes['Liquid'] || '#3b82f6', remixType: 'None',
-      camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, phrase: 'Intro', markers: []
+      camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6,
+      phrase: 'Buildup', endPhrase: 'Buildup', markers: []
     };
     if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); }
     else alert('Cannot insert: overlaps an existing clip on this track.');
@@ -328,44 +359,69 @@ export default function App() {
     const r = new FileReader();
     r.onload = () => {
       clearAllClips();
-      const text = String(r.result||'');
-      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-      const newClips = [];
-      for (const line of lines){
-        const m = line.match(/^(\d+):(\d{2})\s+(.*)$/);
-        if (!m) continue;
-        const startSec = Number(m[1])*60 + Number(m[2]);
-        const name = m[3];
-        newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor: subtypes['Liquid'] || '#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, phrase:'Intro', markers:[] });
-      }
-      newClips.sort((a,b)=> a.startSec - b.startSec);
-      // adjust end times based on next start if not overlapping
-      for (let i=0; i<newClips.length; i++){
-        const next = newClips[i+1];
-        if (next){
-          const diff = next.startSec - newClips[i].startSec;
-          if (diff >= 60) newClips[i].endSec = next.startSec;
+      try {
+        const text = String(r.result || '');
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const newClips = [];
+        for (const line of lines) {
+          const m = line.match(/^(\d+):(\d{2})\s+(.+)$/);
+          if (!m) continue;
+          const startSec = Number(m[1]) * 60 + Number(m[2]);
+          const name = m[3];
+          newClips.push({
+            id: uid('clip'),
+            track: 0,
+            name,
+            startSec,
+            endSec: startSec + 60,
+            baseColor: subtypes['Liquid'] || '#3b82f6',
+            remixType: 'None',
+            camelot: '',
+            genre: 'DnB',
+            subgenre: 'Liquid',
+            energy: 5,
+            phrase: 'Buildup',
+            endPhrase: 'Buildup',
+            markers: []
+          });
         }
-      }
-      const trackEnds = [];
-      let lastDeck = -1;
-      for (const c of newClips){
-        let t = 0;
-        while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
-        if (t === lastDeck) {
-          t++;
-          while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        if (newClips.length === 0) {
+          alert('No valid setlist lines found');
+          return;
         }
-        c.track = t;
-        trackEnds[t] = c.endSec;
-        lastDeck = t;
-      }
-      setClips(newClips);
-      newClips.forEach(c => {
-        fetchSongInfo(c.name).then(info => {
-          if (info) updateClip(c.id, { camelot: info.camelot || '', subgenre: info.subgenre || c.subgenre });
+        newClips.sort((a, b) => a.startSec - b.startSec);
+        // adjust end times based on next start if not overlapping
+        for (let i = 0; i < newClips.length; i++) {
+          const next = newClips[i + 1];
+          if (next) {
+            const diff = next.startSec - newClips[i].startSec;
+            if (diff >= 60) newClips[i].endSec = next.startSec;
+          }
+        }
+        const trackEnds = [];
+        let lastDeck = -1;
+        for (const c of newClips) {
+          let t = 0;
+          while (trackEnds[t] && trackEnds[t] > c.startSec) t++;
+          if (t === lastDeck) {
+            t++;
+            while (trackEnds[t] && trackEnds[t] > c.startSec) t++;
+          }
+          c.track = t;
+          trackEnds[t] = c.endSec;
+          lastDeck = t;
+        }
+        setClips(newClips);
+        alert(`Imported ${newClips.length} tracks`);
+        newClips.forEach(c => {
+          fetchSongInfo(c.name).then(info => {
+            if (info) updateClip(c.id, { camelot: info.camelot || '', subgenre: info.subgenre || c.subgenre });
+          });
         });
-      });
+      } catch (e) {
+        console.error('Setlist import failed', e);
+        alert('Failed to import setlist');
+      }
     };
     r.readAsText(file);
   }
@@ -852,6 +908,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   const stripe = subtypes[clip.remixType] || '';
   const bg = stripe ? `repeating-linear-gradient(45deg, ${baseColor}, ${baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : baseColor;
   const phraseColor = PHRASE_COLORS[clip.phrase];
+  const endPhraseColor = PHRASE_COLORS[clip.endPhrase];
 
   function startDrag(e) { e.stopPropagation(); e.preventDefault(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
@@ -884,6 +941,12 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
         <div
           className="absolute left-0 top-0 bottom-0"
           style={{ width:8, background: phraseColor, boxShadow:'0 0 0 1px rgba(0,0,0,0.6)' }}
+        />
+      )}
+      {endPhraseColor && (
+        <div
+          className="absolute right-0 top-0 bottom-0"
+          style={{ width:8, background: endPhraseColor, boxShadow:'0 0 0 1px rgba(0,0,0,0.6)' }}
         />
       )}
 
@@ -950,7 +1013,8 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
           <label className="flex items-center gap-2"><span className="w-24">Camelot</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
           <label className="flex items-center gap-2"><span className="w-24">Subgenre</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-24">Remix</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-24">Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.phrase||'Intro'} onChange={(e)=> onChange({ phrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.phrase||'Buildup'} onChange={(e)=> onChange({ phrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">End Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.endPhrase||'Buildup'} onChange={(e)=> onChange({ endPhrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-24">Energy</span><input type="number" className="flex-1 px-1 py-0.5 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
         </div>
         <div className="mt-2"><button className="px-2 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
