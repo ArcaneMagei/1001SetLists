@@ -356,6 +356,13 @@ export default function App() {
   const spotifyTokenRef = useRef('');
   const spotifyTokenExpiryRef = useRef(0);
 
+  const [beatportUser, setBeatportUser] = useState(() => localStorage.getItem('beatportUser') || '');
+  const [beatportPass, setBeatportPass] = useState(() => localStorage.getItem('beatportPass') || '');
+  useEffect(() => localStorage.setItem('beatportUser', beatportUser), [beatportUser]);
+  useEffect(() => localStorage.setItem('beatportPass', beatportPass), [beatportPass]);
+  const beatportTokenRef = useRef('');
+  const beatportTokenExpiryRef = useRef(0);
+
   async function getSpotifyToken() {
     if (!spotifyClientId || !spotifyClientSecret) return null;
     const now = Date.now();
@@ -381,60 +388,70 @@ export default function App() {
     return null;
   }
 
+  async function getBeatportToken() {
+    if (!beatportUser || !beatportPass) return null;
+    const now = Date.now();
+    if (beatportTokenRef.current && now < beatportTokenExpiryRef.current) return beatportTokenRef.current;
+    try {
+      const body = `grant_type=password&username=${encodeURIComponent(beatportUser)}&password=${encodeURIComponent(beatportPass)}`;
+      const res = await fetch('https://oauth.beatport.com/identity/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + btoa(`${beatportUser}:${beatportPass}`)
+        },
+        body
+      });
+      if (res.ok) {
+        const json = await res.json();
+        beatportTokenRef.current = json.access_token;
+        beatportTokenExpiryRef.current = now + (json.expires_in || 3600) * 1000;
+        return beatportTokenRef.current;
+      }
+    } catch (e) {
+      console.error('Beatport token error', e);
+    }
+    return null;
+  }
+
   async function fetchSongInfo(name) {
     const msgs = [];
-    let artist = '';
-    let title = name;
-    const dash = name.indexOf(' - ');
-    if (dash !== -1) {
-      artist = name.slice(0, dash).trim();
-      title = name.slice(dash + 3).trim();
-    }
     const q = encodeURIComponent(name);
 
     // Spotify
     const token = await getSpotifyToken();
     if (token) {
       try {
-        const queries = [];
-        if (artist) queries.push(`track:${title} artist:${artist}`);
-        queries.push(name);
-        let track = null;
-        for (const qs of queries) {
-          const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${encodeURIComponent(qs)}`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          if (res.ok) {
-            const json = await res.json();
-            track = json.tracks?.items?.[0];
-            if (track) break;
-          } else {
-            msgs.push('Spotify: request failed');
-            track = null;
-            break;
-          }
-        }
-        if (track?.id) {
-          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
-          if (af.ok) {
-            const afJson = await af.json();
-            if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
-              const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-              const keyName = names[afJson.key];
-              const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
-              const camelot = keyScaleToCamelot(keyName, scale);
-              if (camelot) return { camelot, msg: 'Found via Spotify' };
-              msgs.push('Spotify: no key');
+        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${q}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const track = json.tracks?.items?.[0];
+          if (track?.id) {
+            const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+            if (af.ok) {
+              const afJson = await af.json();
+              if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
+                const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+                const keyName = names[afJson.key];
+                const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
+                const camelot = keyScaleToCamelot(keyName, scale);
+                if (camelot) return { camelot, msg: 'Found via Spotify' };
+                msgs.push('Spotify: no key');
+              } else {
+                msgs.push('Spotify: no key');
+              }
             } else {
-              msgs.push('Spotify: no key');
+              const err = await af.text().catch(()=> '—');
+              console.error('Spotify audio-features error', err);
+              msgs.push('Spotify: audio-features failed');
             }
           } else {
-            const err = await af.text().catch(()=>'—');
-            console.error('Spotify audio-features error', err);
-            msgs.push('Spotify: audio-features failed');
+            msgs.push('Spotify: no results');
           }
         } else {
-          msgs.push('Spotify: no results');
+          msgs.push('Spotify: request failed');
         }
       } catch (e) {
         console.error('Spotify lookup failed', e);
@@ -446,7 +463,9 @@ export default function App() {
 
     // Beatport
     try {
-      const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`);
+      const bToken = await getBeatportToken();
+      const headers = bToken ? { Authorization: `Bearer ${bToken}` } : {};
+      const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`, { headers });
       if (res.status === 401) {
         msgs.push('Beatport: auth required');
       } else if (res.ok) {
@@ -469,8 +488,7 @@ export default function App() {
 
     // MusicBrainz
     try {
-      const mbQ = artist ? encodeURIComponent(`recording:"${title}" AND artist:"${artist}"`) : q;
-      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${mbQ}&limit=1&fmt=json`);
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${q}&limit=1&fmt=json`);
       if (mb.ok) {
         const mbJson = await mb.json();
         const rec = mbJson.recordings?.[0];
@@ -776,6 +794,19 @@ export default function App() {
             value={spotifyClientSecret}
             onChange={e=> setSpotifyClientSecret(e.target.value)}
             className="px-1 py-0.5 border rounded text-xs w-40"
+          />
+          <input
+            placeholder="Beatport Username"
+            value={beatportUser}
+            onChange={e=> setBeatportUser(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-32"
+          />
+          <input
+            placeholder="Beatport Password"
+            type="password"
+            value={beatportPass}
+            onChange={e=> setBeatportPass(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-32"
           />
           <button onClick={clearAllClips} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
         </div>
