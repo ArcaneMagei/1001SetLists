@@ -73,6 +73,22 @@ const CAMELOT_VALUE_MAP = {
 const VALUE_TO_CAMELOT = Object.fromEntries(Object.entries(CAMELOT_VALUE_MAP).map(([k,v])=>[v,k]));
 const SHAPE_BY_TYPE = { transition: "square", effect: "triangle" };
 
+const KEY_SCALE_TO_CAMELOT = {
+  'C MAJOR':'8B','G MAJOR':'9B','D MAJOR':'10B','A MAJOR':'11B','E MAJOR':'12B','B MAJOR':'1B','F# MAJOR':'2B','C# MAJOR':'3B',
+  'G# MAJOR':'4B','D# MAJOR':'5B','A# MAJOR':'6B','F MAJOR':'7B',
+  'A MINOR':'8A','E MINOR':'9A','B MINOR':'10A','F# MINOR':'11A','C# MINOR':'12A','G# MINOR':'1A','D# MINOR':'2A',
+  'A# MINOR':'3A','F MINOR':'4A','C MINOR':'5A','G MINOR':'6A','D MINOR':'7A'
+};
+
+function keyScaleToCamelot(key, scale) {
+  if (!key) return '';
+  const flats = { BB:'A#', DB:'C#', EB:'D#', GB:'F#', AB:'G#' };
+  let k = key.toUpperCase();
+  k = flats[k] || k;
+  const s = (scale || '').toUpperCase();
+  return KEY_SCALE_TO_CAMELOT[`${k} ${s}`] || '';
+}
+
 function fmtTime(sec) {
   if (isNaN(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -315,16 +331,34 @@ export default function App() {
 
   const SONGBPM_API_KEY = '';
   async function fetchSongInfo(name) {
-    if (!SONGBPM_API_KEY) return null;
+    // Try SongBPM first if an API key is supplied
+    if (SONGBPM_API_KEY) {
+      try {
+        const res = await fetch(`https://api.getsongbpm.com/search/?api_key=${SONGBPM_API_KEY}&type=track&lookup=${encodeURIComponent(name)}`);
+        const json = await res.json();
+        const track = json.search && json.search[0];
+        if (track && track.id) {
+          const detRes = await fetch(`https://api.getsongbpm.com/song/?api_key=${SONGBPM_API_KEY}&id=${track.id}`);
+          const detJson = await detRes.json();
+          const song = detJson.song || {};
+          const camelot = (song.camelot || song.key || '').toUpperCase();
+          if (camelot) return { camelot, subgenre: song.genre || '' };
+        }
+      } catch (e) {
+        console.error('SongBPM lookup failed', e);
+      }
+    }
+    // Fallback to MusicBrainz + AcousticBrainz
     try {
-      const res = await fetch(`https://api.getsongbpm.com/search/?api_key=${SONGBPM_API_KEY}&type=track&lookup=${encodeURIComponent(name)}`);
-      const json = await res.json();
-      const track = json.search && json.search[0];
-      if (track && track.id) {
-        const detRes = await fetch(`https://api.getsongbpm.com/song/?api_key=${SONGBPM_API_KEY}&id=${track.id}`);
-        const detJson = await detRes.json();
-        const song = detJson.song || {};
-        return { camelot: (song.camelot || song.key || '').toUpperCase(), subgenre: song.genre || '' };
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(name)}&fmt=json`);
+      const mbJson = await mb.json();
+      const rec = mbJson.recordings && mbJson.recordings[0];
+      if (rec && rec.id) {
+        const ab = await fetch(`https://acousticbrainz.org/api/v1/${rec.id}/low-level`);
+        const abJson = await ab.json();
+        const tonal = abJson.tonal || {};
+        const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
+        if (camelot) return { camelot, subgenre: '' };
       }
     } catch (e) {
       console.error('Metadata fetch failed', e);
