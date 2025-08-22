@@ -375,13 +375,23 @@ export default function App() {
 
   async function fetchSongInfo(name) {
     const msgs = [];
+    let artist = '';
+    let title = name;
+    const dash = name.indexOf(' - ');
+    if (dash !== -1) {
+      artist = name.slice(0, dash).trim();
+      title = name.slice(dash + 3).trim();
+    }
     const q = encodeURIComponent(name);
 
     // Try Spotify first if credentials are supplied
     const token = await getSpotifyToken();
     if (token) {
       try {
-        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${q}`, {
+        const search = artist
+          ? encodeURIComponent(`track:${title} artist:${artist}`)
+          : encodeURIComponent(title);
+        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${search}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -393,7 +403,7 @@ export default function App() {
             });
             if (af.ok) {
               const afJson = await af.json();
-              if (typeof afJson.key === 'number' && typeof afJson.mode === 'number') {
+              if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
                 const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
                 const keyName = names[afJson.key];
                 const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
@@ -443,7 +453,10 @@ export default function App() {
 
     // Fallback to MusicBrainz + AcousticBrainz
     try {
-      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${q}&fmt=json`);
+      const mbQ = artist
+        ? encodeURIComponent(`recording:"${title}" AND artist:"${artist}"`)
+        : q;
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${mbQ}&fmt=json`);
       if (mb.ok) {
         const mbJson = await mb.json();
         const rec = mbJson.recordings && mbJson.recordings[0];
