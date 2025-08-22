@@ -947,7 +947,7 @@ export default function App() {
           {/* Graph below deck 4 */}
           <div className="mt-2">
             <h3 className="text-sm font-semibold mb-2">Energy & Camelot</h3>
-            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} />
+            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
           </div>
         </div>
       </div>
@@ -1433,7 +1433,7 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
   );
 }
 
-function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
+function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playheadSec }) {
   const width = Math.ceil(seconds * pxPerSec);
   const height = 100;
   const energyPath = seriesToPath(energySeries, width, height, 0);
@@ -1459,6 +1459,8 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   }
   function onLeave(){ onHover?.(null); }
 
+  const playheadX = Math.round(playheadSec * pxPerSec);
+
   return (
     <div style={{ width, position:'relative' }} onMouseMove={onMove} onMouseLeave={onLeave}>
       <svg width={width} height={height}>
@@ -1468,45 +1470,61 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
         <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" strokeLinecap="round" strokeLinejoin="round" />
         <path d={camelotPath} fill="none" strokeWidth={2} stroke={`url(#${gradId})`} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
+      <div className="absolute top-0 bottom-0 w-[2px] bg-red-500" style={{ left: playheadX }} />
     </div>
   );
 }
 
-function clipPhraseAt(c, t) {
-  if (!c) return 'Buildup';
-  let phrase = c.phrase || 'Buildup';
-  const elapsed = t - c.startSec;
-  if (elapsed <= 0) return phrase;
-  if (c.endPhrase && t >= c.endSec) return c.endPhrase;
-  const steps = Math.floor(elapsed / PHRASE_DURATION);
-  for (let i = 0; i < steps; i++) {
-    if (c.endPhrase && phrase === c.endPhrase) break;
-    phrase = NEXT_PHRASE[phrase] || phrase;
-  }
-  return phrase;
-}
+const RAMP_BARS = 8;
+const RAMP_DURATION = RAMP_BARS * 4 * SECS_PER_BEAT;
 
 function clipEnergyAt(c, t) {
   const base = c.energy || 5;
-  const phrase = clipPhraseAt(c, t);
-  const delta = PHRASE_DELTA[phrase] || 0;
-  return clamp(base + delta, 1, 10);
+  // determine current segment and neighbouring phrases
+  let phrase = c.phrase || 'Buildup';
+  let segStart = c.startSec;
+  let prevPhrase = phrase;
+  while (segStart + PHRASE_DURATION <= t && segStart + PHRASE_DURATION < c.endSec) {
+    prevPhrase = phrase;
+    segStart += PHRASE_DURATION;
+    phrase = NEXT_PHRASE[phrase] || phrase;
+  }
+  const segEnd = Math.min(c.endSec, segStart + PHRASE_DURATION);
+  const nextPhrase = (segEnd >= c.endSec) ? (c.endPhrase || phrase) : (NEXT_PHRASE[phrase] || phrase);
+  const ePrev = base + (PHRASE_DELTA[prevPhrase] || 0);
+  const eCurr = base + (PHRASE_DELTA[phrase] || 0);
+  const eNext = base + (PHRASE_DELTA[nextPhrase] || 0);
+  if (phrase === 'Buildup') {
+    const ratio = (t - segStart) / Math.max(0.001, segEnd - segStart);
+    return clamp(ePrev + (eNext - ePrev) * ratio, 1, 10);
+  } else {
+    if (eNext < eCurr) {
+      const rampStart = segEnd - RAMP_DURATION;
+      if (t >= rampStart) {
+        const r = (t - rampStart) / Math.max(0.001, segEnd - rampStart);
+        return clamp(eCurr + (eNext - eCurr) * r, 1, 10);
+      }
+    }
+    return clamp(eCurr, 1, 10);
+  }
 }
 
 function buildEnergySeries(clips, samples) {
   const out = new Array(Math.max(1, samples)).fill(0);
+  const specials = ['DropSwap','DoubleDrop','Drop fake','Drop 4x4'];
   for (let i = 0; i < out.length; i++) {
     const t = i * SECS_PER_BEAT;
     const active = clips.filter(c => c.startSec <= t && t < c.endSec);
     if (active.length === 0) { out[i] = 0; continue; }
-    const base = Math.max(...active.map(a => clipEnergyAt(a, t)));
+    let base = 0;
     let bonus = Math.max(0, active.length - 1) * 0.5; // overlapping tracks raise energy
     for (const c of active) {
-      const bump = (c.markers || []).some(m =>
-        m.startSec <= t && t < (m.endSec ?? m.startSec + 2) &&
-        ['DropSwap','DoubleDrop','Drop fake','Drop 4x4'].includes(m.subtype)
-      );
-      if (bump) bonus += 0.5;
+      base = Math.max(base, clipEnergyAt(c, t));
+      for (const m of c.markers || []) {
+        if (specials.includes(m.subtype) && t >= m.startSec && t < m.startSec + PHRASE_DURATION) {
+          bonus += 0.5;
+        }
+      }
     }
     out[i] = Math.min(10, base + bonus);
   }
