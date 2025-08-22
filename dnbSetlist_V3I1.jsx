@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
 // - Retrieve Camelot keys via Spotify/Beatport with MusicBrainz fallback
+// - Phrase-driven energy curve with drop marker boosts
 
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
@@ -26,6 +27,19 @@ const PHRASE_COLORS = {
   "Drop/Verse": "#ff6666",   // lighter red
   Breakdown: "#00ff00",        // green
   Outro: "#0000ff",            // blue
+};
+
+const PHRASE_ENERGY = {
+  Intro: 2,
+  Verse: 3,
+  Buildup: 6,
+  'Drop 1': 10,
+  'Drop 4x4': 10,
+  'Drop 2': 9,
+  'Drop fake': 8,
+  'Drop/Verse': 7,
+  Breakdown: 3,
+  Outro: 2,
 };
 
 const SUBGENRE_COLORS = {
@@ -1421,18 +1435,25 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   );
 }
 
+function clipEnergyAt(c, t) {
+  const startE = PHRASE_ENERGY[c.phrase] ?? c.energy ?? 5;
+  const endE = PHRASE_ENERGY[c.endPhrase] ?? startE;
+  const frac = clamp((t - c.startSec) / Math.max(0.001, c.endSec - c.startSec), 0, 1);
+  return startE + (endE - startE) * frac;
+}
+
 function buildEnergySeries(clips, samples) {
   const out = new Array(Math.max(1, samples)).fill(0);
   for (let i = 0; i < out.length; i++) {
     const t = i * SECS_PER_BEAT;
     const active = clips.filter(c => c.startSec <= t && t < c.endSec);
     if (active.length === 0) { out[i] = 0; continue; }
-    const base = Math.max(...active.map(a => a.energy || 0));
+    const base = Math.max(...active.map(a => clipEnergyAt(a, t)));
     let bonus = Math.max(0, active.length - 1); // extra tracks add energy
     for (const c of active) {
       const bump = (c.markers || []).some(m =>
         m.startSec <= t && t < (m.endSec ?? m.startSec + 2) &&
-        ['DropSwap','DoubleDrop','Drop fake'].includes(m.subtype)
+        ['DropSwap','DoubleDrop','Drop fake','Drop 4x4'].includes(m.subtype)
       );
       if (bump) bonus += 0.5;
     }
