@@ -73,6 +73,21 @@ function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a
 function seriesToPath(series, width, height, yOffset) { if (!series || series.length === 0) return ""; const stepX = width / (series.length - 1 || 1); const max = Math.max(1, ...series); const points = series.map((v, i) => `${i * stepX},${yOffset + (height - (v / max) * height)}`); return `M ${points.join(" L ")}`; }
 function camelotToValue(k) { if (!k) return 0; const map = {'1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,'1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24}; return map[k] || 0; }
 
+async function fetchBeatportToken(clientId, clientSecret) {
+  const body = new URLSearchParams();
+  body.set('grant_type', 'client_credentials');
+  body.set('client_id', clientId);
+  body.set('client_secret', clientSecret);
+  const res = await fetch('https://oauth.beatport.com/identity/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  });
+  if (!res.ok) throw new Error('Beatport token request failed');
+  const data = await res.json();
+  return { token: data.access_token, expires: Date.now() + (data.expires_in || 0) * 1000 };
+}
+
 function buildDemo() {
   const mk = (track, name, start, end, sub, remix, camelot, energy) => ({ id: uid('clip'), track, name, startSec: start, endSec: end, baseColor: SUBGENRE_COLORS[sub] || '#3b82f6', remixType: remix, camelot, genre: 'DnB', subgenre: sub, energy, markers: [] });
   return [ mk(0,'Breakbeat Era',2,18,'Liquid','VIP','8A',5), mk(1,'Headcannon (VIP)',10,28,'Neurofunk','Dub','9A',7), mk(2,'City Lights',22,40,'Liquid','None','10A',4), mk(3,'Jungle Tekno',33,50,'Jungle','Genre Flip','11A',6) ];
@@ -107,6 +122,33 @@ export default function App() {
     return { url: '', title: '' };
   });
   useEffect(() => { localStorage.setItem('dnb_media_info', JSON.stringify(mediaInfo)); }, [mediaInfo]);
+
+  // Beatport credentials and token cache
+  const [beatportClientId, setBeatportClientId] = useState(() => localStorage.getItem('bp_client_id') || '');
+  const [beatportClientSecret, setBeatportClientSecret] = useState(() => localStorage.getItem('bp_client_secret') || '');
+  const [beatportTokenInfo, setBeatportTokenInfo] = useState(() => {
+    const saved = localStorage.getItem('bp_token');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return { token: null, expires: 0 };
+  });
+  useEffect(() => { localStorage.setItem('bp_client_id', beatportClientId); }, [beatportClientId]);
+  useEffect(() => { localStorage.setItem('bp_client_secret', beatportClientSecret); }, [beatportClientSecret]);
+  useEffect(() => { localStorage.setItem('bp_token', JSON.stringify(beatportTokenInfo)); }, [beatportTokenInfo]);
+
+  async function beatportLookup(url) {
+    let token = beatportTokenInfo.token;
+    if (!token || beatportTokenInfo.expires <= Date.now()) {
+      if (!beatportClientId || !beatportClientSecret) throw new Error('Beatport credentials not set');
+      const { token: newToken, expires } = await fetchBeatportToken(beatportClientId, beatportClientSecret);
+      setBeatportTokenInfo({ token: newToken, expires });
+      token = newToken;
+    }
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error('Beatport lookup failed');
+    return res.json();
+  }
 
   const lastClipEnd = useMemo(()=> Math.max(0, ...clips.map(c => c.endSec || 0)), [clips]);
   const maxEnd = Math.max(120, mediaDurationSec || 0, lastClipEnd) + DEFAULT_TAIL_PADDING_SEC;
@@ -368,6 +410,21 @@ export default function App() {
           </div>
         )}
       </header>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <input
+          placeholder="Beatport Client ID"
+          className="px-2 py-1 border rounded"
+          value={beatportClientId}
+          onChange={e => setBeatportClientId(e.target.value)}
+        />
+        <input
+          placeholder="Beatport Client Secret"
+          className="px-2 py-1 border rounded"
+          value={beatportClientSecret}
+          onChange={e => setBeatportClientSecret(e.target.value)}
+        />
+      </div>
 
       <div className="bg-white rounded p-3 shadow overflow-auto">
         {/* Big overall timeline integrated above the tracks */}
