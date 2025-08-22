@@ -343,65 +343,90 @@ export default function App() {
     setSelectedMarkerRef(null);
   }
 
-  const TUNEBAT_API_KEY = '';
-async function fetchSongInfo(name) {
+  const TUNEBAT_API_KEY = localStorage.getItem('tunebatKey') || '';
+  async function fetchSongInfo(name) {
+    const msgs = [];
+    const q = encodeURIComponent(name);
+
     // Try Tunebat (RapidAPI) first if an API key is supplied
     if (TUNEBAT_API_KEY) {
       try {
-        const res = await fetch(`https://tunebat.p.rapidapi.com/search?q=${encodeURIComponent(name)}`, {
+        const res = await fetch(`https://tunebat.p.rapidapi.com/search?q=${q}`, {
           headers: {
             'X-RapidAPI-Key': TUNEBAT_API_KEY,
             'X-RapidAPI-Host': 'tunebat.p.rapidapi.com'
           }
         });
-        const json = await res.json();
-        const tracks = json.tracks || [];
-        const track = tracks.find(t => t.title && t.title.toLowerCase() === name.toLowerCase()) || tracks[0];
-        if (track) {
-          const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
-          if (camelot) return { camelot, msg: 'Found via Tunebat' };
-          return { camelot: '', msg: 'Tunebat: no match' };
+        if (res.ok) {
+          const json = await res.json();
+          const tracks = json.tracks || [];
+          const track = tracks.find(t => t.title && t.title.toLowerCase() === name.toLowerCase()) || tracks[0];
+          if (track) {
+            const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
+            if (camelot) return { camelot, msg: 'Found via Tunebat' };
+            msgs.push('Tunebat: no match');
+          } else {
+            msgs.push('Tunebat: no results');
+          }
+        } else {
+          msgs.push('Tunebat: request failed');
         }
-        return { camelot: '', msg: 'Tunebat: no results' };
       } catch (e) {
         console.error('Tunebat lookup failed', e);
-        // continue to next provider
+        msgs.push('Tunebat: error');
       }
     }
 
     // Try Beatport public search
     try {
-      const res = await fetch(`https://api.beatport.com/v4/catalog/search/?type=tracks&per-page=1&query=${encodeURIComponent(name)}`);
-      const json = await res.json();
-      const track = json.results && json.results[0];
-      if (track) {
-        const camelot = (track.key || track.mix?.key || '').toUpperCase();
-        if (camelot) return { camelot, msg: 'Found via Beatport' };
-        return { camelot: '', msg: 'Beatport: no match' };
+      const res = await fetch(`https://api.beatport.com/v4/catalog/search/?type=tracks&per-page=1&query=${q}`);
+      if (res.ok) {
+        const json = await res.json();
+        const track = json.results && json.results[0];
+        if (track) {
+          const camelot = (track.key || track.mix?.key || '').toUpperCase();
+          if (camelot) return { camelot, msg: 'Found via Beatport' };
+          msgs.push('Beatport: no match');
+        } else {
+          msgs.push('Beatport: no results');
+        }
+      } else {
+        msgs.push('Beatport: request failed');
       }
-      return { camelot: '', msg: 'Beatport: no results' };
     } catch (e) {
       console.error('Beatport lookup failed', e);
+      msgs.push('Beatport: error');
     }
 
     // Fallback to MusicBrainz + AcousticBrainz
     try {
-      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(name)}&fmt=json`);
-      const mbJson = await mb.json();
-      const rec = mbJson.recordings && mbJson.recordings[0];
-      if (rec && rec.id) {
-        const ab = await fetch(`https://acousticbrainz.org/api/v1/${rec.id}/low-level`);
-        const abJson = await ab.json();
-        const tonal = abJson.tonal || {};
-        const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
-        if (camelot) return { camelot, msg: 'Found via MusicBrainz' };
-        return { camelot: '', msg: 'MusicBrainz: no match' };
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${q}&fmt=json`);
+      if (mb.ok) {
+        const mbJson = await mb.json();
+        const rec = mbJson.recordings && mbJson.recordings[0];
+        if (rec && rec.id) {
+          const ab = await fetch(`https://acousticbrainz.org/api/v1/${rec.id}/low-level`);
+          if (ab.ok) {
+            const abJson = await ab.json();
+            const tonal = abJson.tonal || {};
+            const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
+            if (camelot) return { camelot, msg: 'Found via MusicBrainz' };
+            msgs.push('MusicBrainz: no match');
+          } else {
+            msgs.push('MusicBrainz: lookup failed');
+          }
+        } else {
+          msgs.push('MusicBrainz: no results');
+        }
+      } else {
+        msgs.push('MusicBrainz: request failed');
       }
-      return { camelot: '', msg: 'MusicBrainz: no results' };
     } catch (e) {
       console.error('Metadata fetch failed', e);
-      return { camelot: '', msg: 'Lookup error' };
+      msgs.push('Lookup error');
     }
+
+    return { camelot: '', msg: msgs.join(' -> ') || 'Lookup failed' };
   }
 
   function lookupCamelot(clip) {
