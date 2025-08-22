@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Display media title and timing
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
-// - Retrieve Camelot keys via Tunebat
+// - Retrieve Camelot keys via Tunebat/Beatport with MusicBrainz fallback
 
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
@@ -365,9 +365,25 @@ async function fetchSongInfo(name) {
         return { camelot: '', msg: 'Tunebat: no results' };
       } catch (e) {
         console.error('Tunebat lookup failed', e);
-        return { camelot: '', msg: 'Tunebat error' };
+        // continue to next provider
       }
     }
+
+    // Try Beatport public search
+    try {
+      const res = await fetch(`https://api.beatport.com/v4/catalog/search/?type=tracks&per-page=1&query=${encodeURIComponent(name)}`);
+      const json = await res.json();
+      const track = json.results && json.results[0];
+      if (track) {
+        const camelot = (track.key || track.mix?.key || '').toUpperCase();
+        if (camelot) return { camelot, msg: 'Found via Beatport' };
+        return { camelot: '', msg: 'Beatport: no match' };
+      }
+      return { camelot: '', msg: 'Beatport: no results' };
+    } catch (e) {
+      console.error('Beatport lookup failed', e);
+    }
+
     // Fallback to MusicBrainz + AcousticBrainz
     try {
       const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(name)}&fmt=json`);
