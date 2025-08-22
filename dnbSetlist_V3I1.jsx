@@ -157,10 +157,19 @@ function seriesToPath(series, width, height, yOffset) {
   return d;
 }
 
-function smoothSeries(arr) {
-  const out = arr.slice();
-  for (let i = 1; i < arr.length - 1; i++) {
-    out[i] = (arr[i - 1] + arr[i] + arr[i + 1]) / 3;
+function smoothSeries(arr, window = 3, passes = 1) {
+  let out = arr.slice();
+  const half = Math.floor(window / 2);
+  for (let p = 0; p < passes; p++) {
+    const tmp = out.slice();
+    for (let i = 0; i < tmp.length; i++) {
+      let sum = 0, cnt = 0;
+      for (let j = -half; j <= half; j++) {
+        const idx = i + j;
+        if (idx >= 0 && idx < tmp.length) { sum += tmp[idx]; cnt++; }
+      }
+      out[i] = sum / cnt;
+    }
   }
   return out;
 }
@@ -1248,7 +1257,16 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
 
   function showClipHover(e) { const html = '<div><b>' + escapeHtml(clip.name) + '</b></div>' + '<div>' + escapeHtml(clip.genre||'') + (clip.subgenre ? ' / ' + escapeHtml(clip.subgenre) : '') + '</div>' + (clip.energy ? ('<div>Energy: ' + escapeHtml(String(clip.energy)) + '</div>') : '') + (clip.remixType && clip.remixType !== 'None' ? ('<div>Remix: ' + escapeHtml(clip.remixType) + '</div>') : ''); onHover({ x: e.clientX, y: e.clientY, html }); }
 
-  function showMarkerHover(e, m) { const typ = m.type === 'transition' ? 'Transition' : 'Effect'; const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : ''; const sr = (m.startSec ?? clip.startSec) - clip.startSec; const er = m.endSec != null ? (m.endSec - clip.startSec) : null; const html = '<div><b>' + typ + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' + detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` + (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>'; onHover({ x: e.clientX, y: e.clientY, html }); }
+  function showMarkerHover(e, m) {
+    const name = m.subtype || (m.type === 'transition' ? 'Transition' : 'Effect');
+    const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : '';
+    const sr = (m.startSec ?? clip.startSec) - clip.startSec;
+    const er = m.endSec != null ? (m.endSec - clip.startSec) : null;
+    const html = '<div><b>' + escapeHtml(name) + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' +
+      detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` +
+      (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>';
+    onHover({ x: e.clientX, y: e.clientY, html });
+  }
 
   return (
     <div className={"absolute rounded-xl border shadow-inner select-none" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
@@ -1292,7 +1310,8 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
         const color = (m.subtype && subtypes[m.subtype]) || m.color || (MARKER_TYPE_COLORS[m.type] || '#000');
         const shape = SHAPE_BY_TYPE[m.type] || 'square';
         const isSel = selectedMarkerRef && selectedMarkerRef.clipId === clip.id && selectedMarkerRef.markerId === m.id;
-        const titleText = [m.label, m.details].filter(Boolean).join(' — ') || m.type;
+        const markerName = m.subtype || (m.type === 'transition' ? 'Transition' : 'Effect');
+        const titleText = [markerName, m.label, m.details].filter(Boolean).join(' — ');
         if (m.endSec == null) {
           return (
             <div key={m.id} style={{ position: 'absolute', left: l, top: 0, height: '100%', width: ICON_SIZE, zIndex: 70 }}>
@@ -1491,7 +1510,7 @@ function buildEnergySeries(clips, samples) {
     }
     out[i] = Math.min(10, base + bonus);
   }
-  return smoothSeries(smoothSeries(out));
+  return smoothSeries(out, 5, 2);
 }
 function buildCamelotSeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } active.sort((a,b)=> (b.energy||0)-(a.energy||0)); out[i] = camelotToValue(active[0].camelot||''); } return out; }
 function escapeHtml(s) {
