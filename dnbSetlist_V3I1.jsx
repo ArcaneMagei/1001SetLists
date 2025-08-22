@@ -390,39 +390,46 @@ export default function App() {
     const token = await getSpotifyToken();
     if (token) {
       try {
-        const search = artist
-          ? encodeURIComponent(`track:${title} artist:${artist}`)
-          : encodeURIComponent(title);
-        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${search}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const json = await res.json();
-          const track = json.tracks && json.tracks.items && json.tracks.items[0];
-          if (track && track.id) {
-            const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            if (af.ok) {
-              const afJson = await af.json();
-              if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
-                const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-                const keyName = names[afJson.key];
-                const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
-                const camelot = keyScaleToCamelot(keyName, scale);
-                if (camelot) return { camelot, msg: 'Found via Spotify' };
-                msgs.push('Spotify: no key');
-              } else {
-                msgs.push('Spotify: no key');
-              }
+        const queries = [];
+        if (artist) queries.push(`track:"${title}" artist:"${artist}"`);
+        queries.push(name);
+        let track = null;
+        for (const qStr of queries) {
+          const res = await fetch(
+            `https://api.spotify.com/v1/search?type=track&limit=1&q=${encodeURIComponent(qStr)}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (res.ok) {
+            const json = await res.json();
+            track = json.tracks && json.tracks.items && json.tracks.items[0];
+            if (track) break;
+          } else {
+            msgs.push('Spotify: request failed');
+            track = null;
+            break;
+          }
+        }
+        if (track && track.id) {
+          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (af.ok) {
+            const afJson = await af.json();
+            if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
+              const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+              const keyName = names[afJson.key];
+              const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
+              const camelot = keyScaleToCamelot(keyName, scale);
+              if (camelot) return { camelot, msg: 'Found via Spotify' };
+              msgs.push('Spotify: no key');
             } else {
-              msgs.push('Spotify: audio-features failed');
+              msgs.push('Spotify: no key');
             }
           } else {
-            msgs.push('Spotify: no results');
+            msgs.push('Spotify: audio-features failed');
           }
         } else {
-          msgs.push('Spotify: request failed');
+          msgs.push('Spotify: no results');
         }
       } catch (e) {
         console.error('Spotify lookup failed', e);
