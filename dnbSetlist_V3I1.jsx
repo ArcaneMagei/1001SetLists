@@ -105,7 +105,33 @@ function uid(prefix = "id") { return `${prefix}_${Date.now().toString(36)}_${Mat
 function secToPx(sec, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return Math.round(sec * pxPerSec); }
 function pxToSec(px, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return px / pxPerSec; }
 function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a2, b2); }
-function seriesToPath(series, width, height, yOffset) { if (!series || series.length === 0) return ""; const stepX = width / (series.length - 1 || 1); const max = Math.max(1, ...series); const points = series.map((v, i) => `${i * stepX},${yOffset + (height - (v / max) * height)}`); return `M ${points.join(" L ")}`; }
+function seriesToPath(series, width, height, yOffset) {
+  if (!series || series.length === 0) return "";
+  const stepX = width / (series.length - 1 || 1);
+  const max = Math.max(1, ...series);
+  const pts = series.map((v, i) => [i * stepX, yOffset + (height - (v / max) * height)]);
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x, y] = pts[i];
+    const [x0, y0] = pts[i - 1];
+    const [xMinus, yMinus] = pts[i - 2] || [x0, y0];
+    const [xPlus, yPlus] = pts[i + 1] || [x, y];
+    const cp1x = x0 + (x - xMinus) / 6;
+    const cp1y = y0 + (y - yMinus) / 6;
+    const cp2x = x - (xPlus - x0) / 6;
+    const cp2y = y - (yPlus - y0) / 6;
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${x},${y}`;
+  }
+  return d;
+}
+
+function smoothSeries(arr) {
+  const out = arr.slice();
+  for (let i = 1; i < arr.length - 1; i++) {
+    out[i] = (arr[i - 1] + arr[i] + arr[i + 1]) / 3;
+  }
+  return out;
+}
 function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
 
 function contrastTextColor(hex) {
@@ -479,22 +505,25 @@ export default function App() {
     // Beatport
     try {
       const bToken = await getBeatportToken();
-      const headers = bToken ? { Authorization: `Bearer ${bToken}` } : {};
-      const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`, { headers });
-      if (res.status === 401) {
+      if (!bToken) {
         msgs.push('Beatport: auth required');
-      } else if (res.ok) {
-        const json = await res.json();
-        const track = json.results?.[0];
-        if (track) {
-          const camelot = (track.key || track.mix?.key || '').toUpperCase();
-          if (camelot) return { camelot, msg: 'Found via Beatport' };
-          msgs.push('Beatport: no match');
-        } else {
-          msgs.push('Beatport: no results');
-        }
       } else {
-        msgs.push('Beatport: request failed');
+        const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`, {
+          headers: { Authorization: `Bearer ${bToken}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const track = json.results?.[0];
+          if (track) {
+            const camelot = (track.key || track.mix?.key || '').toUpperCase();
+            if (camelot) return { camelot, msg: 'Found via Beatport' };
+            msgs.push('Beatport: no match');
+          } else {
+            msgs.push('Beatport: no results');
+          }
+        } else {
+          msgs.push('Beatport: request failed');
+        }
       }
     } catch (e) {
       console.error('Beatport lookup failed', e);
@@ -526,7 +555,7 @@ export default function App() {
       }
     } catch (e) {
       console.error('Metadata fetch failed', e);
-      msgs.push('Lookup error');
+      msgs.push('MusicBrainz: error');
     }
 
     return { camelot: '', msg: msgs.join(' -> ') || 'Lookup failed' };
@@ -1392,7 +1421,25 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   );
 }
 
-function buildEnergySeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } const maxEnergy = Math.max(...active.map(a=>a.energy||0)); out[i] = maxEnergy + (active.length-1); } return out; }
+function buildEnergySeries(clips, samples) {
+  const out = new Array(Math.max(1, samples)).fill(0);
+  for (let i = 0; i < out.length; i++) {
+    const t = i * SECS_PER_BEAT;
+    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+    if (active.length === 0) { out[i] = 0; continue; }
+    const base = Math.max(...active.map(a => a.energy || 0));
+    let bonus = Math.max(0, active.length - 1); // extra tracks add energy
+    for (const c of active) {
+      const bump = (c.markers || []).some(m =>
+        m.startSec <= t && t < (m.endSec ?? m.startSec + 2) &&
+        ['DropSwap','DoubleDrop','Drop fake'].includes(m.subtype)
+      );
+      if (bump) bonus += 0.5;
+    }
+    out[i] = Math.min(10, base + bonus);
+  }
+  return smoothSeries(out);
+}
 function buildCamelotSeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } active.sort((a,b)=> (b.energy||0)-(a.energy||0)); out[i] = camelotToValue(active[0].camelot||''); } return out; }
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
