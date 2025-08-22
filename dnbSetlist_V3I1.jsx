@@ -29,17 +29,35 @@ const PHRASE_COLORS = {
   Outro: "#0000ff",            // blue
 };
 
-const PHRASE_ENERGY = {
-  Intro: 2,
-  Verse: 3,
-  Buildup: 6,
-  'Drop 1': 10,
-  'Drop 4x4': 10,
-  'Drop 2': 9,
-  'Drop fake': 8,
-  'Drop/Verse': 7,
-  Breakdown: 3,
-  Outro: 2,
+// phrase energy deltas are applied around each track's median energy (c.energy)
+// so individual clips can fluctuate roughly ±1 based on their musical phrase
+const PHRASE_DELTA = {
+  Intro: -1,
+  Verse: -0.5,
+  Buildup: 0,
+  'Drop 1': 1,
+  'Drop 4x4': 1,
+  'Drop 2': 0.5,
+  'Drop fake': 0.5,
+  'Drop/Verse': 0,
+  Breakdown: -0.5,
+  Outro: -1,
+};
+
+// default phrase progression map used to infer how a song evolves when
+// start/end phrases are the same. Each phrase lasts ~16 bars at 174bpm.
+const PHRASE_DURATION = 16 * 4 * SECS_PER_BEAT; // seconds for 16 bars
+const NEXT_PHRASE = {
+  Intro: 'Verse',
+  Verse: 'Buildup',
+  Buildup: 'Drop 1',
+  'Drop 1': 'Drop 2',
+  'Drop 2': 'Breakdown',
+  'Drop 4x4': 'Drop 2',
+  'Drop fake': 'Breakdown',
+  'Drop/Verse': 'Breakdown',
+  Breakdown: 'Verse',
+  Outro: 'Outro',
 };
 
 const SUBGENRE_COLORS = {
@@ -1435,11 +1453,25 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   );
 }
 
+function clipPhraseAt(c, t) {
+  if (!c) return 'Buildup';
+  let phrase = c.phrase || 'Buildup';
+  const elapsed = t - c.startSec;
+  if (elapsed <= 0) return phrase;
+  if (c.endPhrase && t >= c.endSec) return c.endPhrase;
+  const steps = Math.floor(elapsed / PHRASE_DURATION);
+  for (let i = 0; i < steps; i++) {
+    if (c.endPhrase && phrase === c.endPhrase) break;
+    phrase = NEXT_PHRASE[phrase] || phrase;
+  }
+  return phrase;
+}
+
 function clipEnergyAt(c, t) {
-  const startE = PHRASE_ENERGY[c.phrase] ?? c.energy ?? 5;
-  const endE = PHRASE_ENERGY[c.endPhrase] ?? startE;
-  const frac = clamp((t - c.startSec) / Math.max(0.001, c.endSec - c.startSec), 0, 1);
-  return startE + (endE - startE) * frac;
+  const base = c.energy || 5;
+  const phrase = clipPhraseAt(c, t);
+  const delta = PHRASE_DELTA[phrase] || 0;
+  return clamp(base + delta, 1, 10);
 }
 
 function buildEnergySeries(clips, samples) {
@@ -1449,7 +1481,7 @@ function buildEnergySeries(clips, samples) {
     const active = clips.filter(c => c.startSec <= t && t < c.endSec);
     if (active.length === 0) { out[i] = 0; continue; }
     const base = Math.max(...active.map(a => clipEnergyAt(a, t)));
-    let bonus = Math.max(0, active.length - 1); // extra tracks add energy
+    let bonus = Math.max(0, active.length - 1) * 0.5; // overlapping tracks raise energy
     for (const c of active) {
       const bump = (c.markers || []).some(m =>
         m.startSec <= t && t < (m.endSec ?? m.startSec + 2) &&
@@ -1459,7 +1491,7 @@ function buildEnergySeries(clips, samples) {
     }
     out[i] = Math.min(10, base + bonus);
   }
-  return smoothSeries(out);
+  return smoothSeries(smoothSeries(out));
 }
 function buildCamelotSeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } active.sort((a,b)=> (b.energy||0)-(a.energy||0)); out[i] = camelotToValue(active[0].camelot||''); } return out; }
 function escapeHtml(s) {
