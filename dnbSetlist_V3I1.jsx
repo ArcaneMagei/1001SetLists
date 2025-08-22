@@ -534,7 +534,6 @@ export default function App() {
         } else {
           msgs.push('Spotify: no results');
         }
-        }
       } catch (e) {
         console.error('Spotify lookup failed', e);
         msgs.push('Spotify: error');
@@ -1530,7 +1529,20 @@ function buildEnergySeries(clips, samples) {
   }
   return smoothSeries(out, 5, 2);
 }
-function buildCamelotSeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } active.sort((a,b)=> (b.energy||0)-(a.energy||0)); out[i] = camelotToValue(active[0].camelot||''); } return out; }
+function buildCamelotSeries(clips, samples) {
+  const out = new Array(Math.max(1, samples)).fill(0);
+  for (let i = 0; i < out.length; i++) {
+    const t = i * SECS_PER_BEAT;
+    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+    if (active.length === 0) {
+      out[i] = 0;
+      continue;
+    }
+    active.sort((a, b) => (b.energy || 0) - (a.energy || 0));
+    out[i] = camelotToValue(active[0].camelot || '');
+  }
+  return out;
+}
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   return String(s).replace(/[&<>"']/g, (c) => map[c]);
@@ -1554,18 +1566,3 @@ function onPlayheadMouseDown(e, pxPerBeat, maxEnd, setPlayheadSec) {
   window.addEventListener('mouseup', cleanup);
 }
 
-// ----------------------------
-// Tiny dev-time sanity tests
-// ----------------------------
-if (typeof window !== 'undefined' && !window.__DNB_TL_TESTED__) {
-  window.__DNB_TL_TESTED__ = true;
-  try {
-    console.assert(fmtSec2(1.234) === '1.23', 'fmtSec2 rounds down');
-    console.assert(fmtSec2(1.235) === '1.24', 'fmtSec2 rounds up');
-    console.assert(fmtTime(65) === '1:05', 'fmtTime mm:ss');
-    console.assert(pxToSec(secToPx(12.34, 28), 28) > 12 && pxToSec(secToPx(12.34, 28), 28) < 12.7, 'px<->sec roughly invert');
-    console.assert(escapeHtml('<a>"\' + "'" + '&') === '&lt;a&gt;&quot;&#39;&amp;', 'escapeHtml mapping');
-  } catch (e) {
-    console.warn('Sanity tests failed', e);
-  }
-}
