@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Display media title and timing
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
+// - Retrieve Camelot keys via Tunebat
 
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
@@ -329,23 +330,25 @@ export default function App() {
     setSelectedMarkerRef(null);
   }
 
-  const SONGBPM_API_KEY = '';
+  const TUNEBAT_API_KEY = '';
   async function fetchSongInfo(name) {
-    // Try SongBPM first if an API key is supplied
-    if (SONGBPM_API_KEY) {
+    // Try Tunebat (RapidAPI) first if an API key is supplied
+    if (TUNEBAT_API_KEY) {
       try {
-        const res = await fetch(`https://api.getsongbpm.com/search/?api_key=${SONGBPM_API_KEY}&type=track&lookup=${encodeURIComponent(name)}`);
+        const res = await fetch(`https://tunebat.p.rapidapi.com/search?q=${encodeURIComponent(name)}`, {
+          headers: {
+            'X-RapidAPI-Key': TUNEBAT_API_KEY,
+            'X-RapidAPI-Host': 'tunebat.p.rapidapi.com'
+          }
+        });
         const json = await res.json();
-        const track = json.search && json.search[0];
-        if (track && track.id) {
-          const detRes = await fetch(`https://api.getsongbpm.com/song/?api_key=${SONGBPM_API_KEY}&id=${track.id}`);
-          const detJson = await detRes.json();
-          const song = detJson.song || {};
-          const camelot = (song.camelot || song.key || '').toUpperCase();
-          if (camelot) return { camelot, subgenre: song.genre || '' };
+        const track = json.tracks && json.tracks[0];
+        if (track) {
+          const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
+          if (camelot) return { camelot, subgenre: track.genre || '' };
         }
       } catch (e) {
-        console.error('SongBPM lookup failed', e);
+        console.error('Tunebat lookup failed', e);
       }
     }
     // Fallback to MusicBrainz + AcousticBrainz
