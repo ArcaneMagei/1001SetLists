@@ -203,6 +203,12 @@ export default function App() {
   const [selectedMarkerRef, setSelectedMarkerRef] = useState(null);
   const [lookupMsgs, setLookupMsgs] = useState({});
 
+  const markerDefault = useMemo(() => {
+    return Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect') || '';
+  }, [subtypes, subtypeTypes]);
+  const [activeMarkerSubtype, setActiveMarkerSubtype] = useState(markerDefault);
+  useEffect(() => { setActiveMarkerSubtype(markerDefault); }, [markerDefault]);
+
   // media state
   const [mediaDurationSec, setMediaDurationSec] = useState(0);
   const [mediaInfo, setMediaInfo] = useState(() => {
@@ -386,22 +392,21 @@ export default function App() {
     }
     const q = encodeURIComponent(name);
 
-    // Try Spotify first if credentials are supplied
+    // Spotify
     const token = await getSpotifyToken();
     if (token) {
       try {
         const queries = [];
-        if (artist) queries.push(`track:"${title}" artist:"${artist}"`);
+        if (artist) queries.push(`track:${title} artist:${artist}`);
         queries.push(name);
         let track = null;
-        for (const qStr of queries) {
-          const res = await fetch(
-            `https://api.spotify.com/v1/search?type=track&limit=1&q=${encodeURIComponent(qStr)}`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
+        for (const qs of queries) {
+          const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${encodeURIComponent(qs)}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
           if (res.ok) {
             const json = await res.json();
-            track = json.tracks && json.tracks.items && json.tracks.items[0];
+            track = json.tracks?.items?.[0];
             if (track) break;
           } else {
             msgs.push('Spotify: request failed');
@@ -409,10 +414,8 @@ export default function App() {
             break;
           }
         }
-        if (track && track.id) {
-          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
+        if (track?.id) {
+          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
           if (af.ok) {
             const afJson = await af.json();
             if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
@@ -426,6 +429,8 @@ export default function App() {
               msgs.push('Spotify: no key');
             }
           } else {
+            const err = await af.text().catch(()=>'—');
+            console.error('Spotify audio-features error', err);
             msgs.push('Spotify: audio-features failed');
           }
         } else {
@@ -439,12 +444,14 @@ export default function App() {
       msgs.push('Spotify: no credentials');
     }
 
-    // Try Beatport public search
+    // Beatport
     try {
-      const res = await fetch(`https://api.beatport.com/v4/catalog/search/?type=tracks&per-page=1&query=${q}`);
-      if (res.ok) {
+      const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`);
+      if (res.status === 401) {
+        msgs.push('Beatport: auth required');
+      } else if (res.ok) {
         const json = await res.json();
-        const track = json.results && json.results[0];
+        const track = json.results?.[0];
         if (track) {
           const camelot = (track.key || track.mix?.key || '').toUpperCase();
           if (camelot) return { camelot, msg: 'Found via Beatport' };
@@ -460,16 +467,14 @@ export default function App() {
       msgs.push('Beatport: error');
     }
 
-    // Fallback to MusicBrainz + AcousticBrainz
+    // MusicBrainz
     try {
-      const mbQ = artist
-        ? encodeURIComponent(`recording:"${title}" AND artist:"${artist}"`)
-        : q;
-      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${mbQ}&fmt=json`);
+      const mbQ = artist ? encodeURIComponent(`recording:"${title}" AND artist:"${artist}"`) : q;
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${mbQ}&limit=1&fmt=json`);
       if (mb.ok) {
         const mbJson = await mb.json();
-        const rec = mbJson.recordings && mbJson.recordings[0];
-        if (rec && rec.id) {
+        const rec = mbJson.recordings?.[0];
+        if (rec?.id) {
           const ab = await fetch(`https://acousticbrainz.org/api/v1/${rec.id}/low-level`);
           if (ab.ok) {
             const abJson = await ab.json();
@@ -574,17 +579,11 @@ export default function App() {
           }
         }
         const trackEnds = [];
-        let lastDeck = -1;
         for (const c of newClips) {
           let t = 0;
-          while (trackEnds[t] && trackEnds[t] > c.startSec) t++;
-          if (t === lastDeck) {
-            t++;
-            while (trackEnds[t] && trackEnds[t] > c.startSec) t++;
-          }
+          while (trackEnds[t] != null && trackEnds[t] + 20 > c.startSec) t++;
           c.track = t;
           trackEnds[t] = c.endSec;
-          lastDeck = t;
         }
         setClips(newClips);
         alert(`Imported ${newClips.length} tracks`);
@@ -822,6 +821,7 @@ export default function App() {
                     onHover={setHover}
                     onClearHover={()=> setHover(null)}
                     onSelectMarker={(mid)=> setSelectedMarkerRef({clipId: clip.id, markerId: mid})} selectedMarkerRef={selectedMarkerRef} subtypeTypes={subtypeTypes} subtypes={subtypes}
+                    activeMarkerSubtype={activeMarkerSubtype}
                   />
                 ))}
               </TrackRow>
@@ -837,7 +837,15 @@ export default function App() {
       </div>
 
       <div className="mb-2 flex items-center gap-2 flex-shrink-0">
-        <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} onAddSubtype={addSubtype} onUpdateSubtype={updateSubtype} onDeleteSubtype={deleteSubtype} />
+        <Legend
+          subtypes={subtypes}
+          subtypeTypes={subtypeTypes}
+          onAddSubtype={addSubtype}
+          onUpdateSubtype={updateSubtype}
+          onDeleteSubtype={deleteSubtype}
+          activeMarkerSubtype={activeMarkerSubtype}
+          onSelectMarkerSubtype={setActiveMarkerSubtype}
+        />
       </div>
 
       <Inspector
@@ -925,7 +933,7 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 }
 
 
-function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype }) {
+function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype }) {
   const [manage, setManage] = useState(false);
   const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
   const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
@@ -945,7 +953,11 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
           <div className="font-semibold">Markers (Subtypes)</div>
           <div className="flex gap-2 flex-wrap items-center mt-1">
             {markerItems.map(({name,type}) => (
-              <div key={name} className="flex items-center gap-1.5 border px-1.5 py-0.5 rounded">
+              <div
+                key={name}
+                className={"flex items-center gap-1.5 border px-1.5 py-0.5 rounded cursor-pointer " + (activeMarkerSubtype===name?"ring-2 ring-slate-900":"")}
+                onClick={()=> onSelectMarkerSubtype && onSelectMarkerSubtype(name)}
+              >
                 {type === 'effect'
                   ? <div style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: `10px solid ${subtypes[name]}` }} />
                   : <div style={{width:12,height:12,background: subtypes[name],borderRadius:2}} />}
@@ -1096,7 +1108,7 @@ function GridBackground({ pxPerBeat }) {
   return <div className="absolute inset-0" style={style} />;
 }
 
-function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onAddMarker, onUpdateMarker, onDeleteMarker, onHover, onClearHover, onSelectMarker, selectedMarkerRef, subtypeTypes, subtypes }) {
+function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onAddMarker, onUpdateMarker, onDeleteMarker, onHover, onClearHover, onSelectMarker, selectedMarkerRef, subtypeTypes, subtypes, activeMarkerSubtype }) {
   const left = secToPx(clip.startSec, pxPerBeat);
   const width = Math.max(4, secToPx(clip.endSec - clip.startSec, pxPerBeat));
   const baseColor = subtypes[clip.subgenre] || clip.baseColor;
@@ -1121,8 +1133,9 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const secRel = Math.max(0, pxToSec(x, pxPerBeat));
-    const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || null;
-    const m = { id: uid('m'), type: 'transition', subtype: defaultSubtype, label: '', details: '', startSec: clip.startSec + secRel };
+    const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect') || null;
+    const subtype = activeMarkerSubtype || defaultSubtype;
+    const m = { id: uid('m'), type: subtypeTypes[subtype] || 'transition', subtype, label: '', details: '', startSec: clip.startSec + secRel };
     onAddMarker(m);
   }
 
