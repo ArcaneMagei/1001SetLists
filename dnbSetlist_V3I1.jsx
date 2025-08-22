@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Display media title and timing
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
-// - Retrieve Camelot keys via Tunebat/Beatport with MusicBrainz fallback
+// - Retrieve Camelot keys via Spotify/Beatport with MusicBrainz fallback
 
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
@@ -343,38 +343,81 @@ export default function App() {
     setSelectedMarkerRef(null);
   }
 
-  const TUNEBAT_API_KEY = localStorage.getItem('tunebatKey') || '';
+  const SPOTIFY_CLIENT_ID = localStorage.getItem('spotifyClientId') || '';
+  const SPOTIFY_CLIENT_SECRET = localStorage.getItem('spotifyClientSecret') || '';
+  let spotifyToken = '';
+  let spotifyTokenExpiry = 0;
+
+  async function getSpotifyToken() {
+    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) return null;
+    const now = Date.now();
+    if (spotifyToken && now < spotifyTokenExpiry) return spotifyToken;
+    try {
+      const res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + btoa(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`)
+        },
+        body: 'grant_type=client_credentials'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        spotifyToken = json.access_token;
+        spotifyTokenExpiry = now + (json.expires_in || 3600) * 1000;
+        return spotifyToken;
+      }
+    } catch (e) {
+      console.error('Spotify token error', e);
+    }
+    return null;
+  }
+
   async function fetchSongInfo(name) {
     const msgs = [];
     const q = encodeURIComponent(name);
 
-    // Try Tunebat (RapidAPI) first if an API key is supplied
-    if (TUNEBAT_API_KEY) {
+    // Try Spotify first if credentials are supplied
+    const token = await getSpotifyToken();
+    if (token) {
       try {
-        const res = await fetch(`https://tunebat.p.rapidapi.com/search?q=${q}`, {
-          headers: {
-            'X-RapidAPI-Key': TUNEBAT_API_KEY,
-            'X-RapidAPI-Host': 'tunebat.p.rapidapi.com'
-          }
+        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${q}`, {
+          headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
           const json = await res.json();
-          const tracks = json.tracks || [];
-          const track = tracks.find(t => t.title && t.title.toLowerCase() === name.toLowerCase()) || tracks[0];
-          if (track) {
-            const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
-            if (camelot) return { camelot, msg: 'Found via Tunebat' };
-            msgs.push('Tunebat: no match');
+          const track = json.tracks && json.tracks.items && json.tracks.items[0];
+          if (track && track.id) {
+            const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (af.ok) {
+              const afJson = await af.json();
+              if (typeof afJson.key === 'number' && typeof afJson.mode === 'number') {
+                const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+                const keyName = names[afJson.key];
+                const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
+                const camelot = keyScaleToCamelot(keyName, scale);
+                if (camelot) return { camelot, msg: 'Found via Spotify' };
+                msgs.push('Spotify: no key');
+              } else {
+                msgs.push('Spotify: no key');
+              }
+            } else {
+              msgs.push('Spotify: audio-features failed');
+            }
           } else {
-            msgs.push('Tunebat: no results');
+            msgs.push('Spotify: no results');
           }
         } else {
-          msgs.push('Tunebat: request failed');
+          msgs.push('Spotify: request failed');
         }
       } catch (e) {
-        console.error('Tunebat lookup failed', e);
-        msgs.push('Tunebat: error');
+        console.error('Spotify lookup failed', e);
+        msgs.push('Spotify: error');
       }
+    } else {
+      msgs.push('Spotify: no credentials');
     }
 
     // Try Beatport public search
