@@ -108,6 +108,17 @@ function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a
 function seriesToPath(series, width, height, yOffset) { if (!series || series.length === 0) return ""; const stepX = width / (series.length - 1 || 1); const max = Math.max(1, ...series); const points = series.map((v, i) => `${i * stepX},${yOffset + (height - (v / max) * height)}`); return `M ${points.join(" L ")}`; }
 function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
 
+function contrastTextColor(hex) {
+  if (!hex) return '#000';
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const r = parseInt(h.substr(0,2),16);
+  const g = parseInt(h.substr(2,2),16);
+  const b = parseInt(h.substr(4,2),16);
+  const luminance = (0.299*r + 0.587*g + 0.114*b)/255;
+  return luminance > 0.6 ? '#000' : '#fff';
+}
+
 function buildDemo() {
   const mk = (
     track,
@@ -226,7 +237,8 @@ export default function App() {
         const rect = el.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const timeAtPointer = (el.scrollLeft + mouseX) / pxPerSec;
-        const factor = Math.exp(-e.deltaY / 2000);
+        const delta = clamp(e.deltaY, -100, 100);
+        const factor = Math.exp(-delta / 4000);
         const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
         const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
         setZoom(newZoom);
@@ -342,10 +354,11 @@ export default function App() {
           }
         });
         const json = await res.json();
-        const track = json.tracks && json.tracks[0];
+        const tracks = json.tracks || [];
+        const track = tracks.find(t => t.title && t.title.toLowerCase() === name.toLowerCase()) || tracks[0];
         if (track) {
           const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
-          if (camelot) return { camelot, subgenre: track.genre || '' };
+          if (camelot) return { camelot };
         }
       } catch (e) {
         console.error('Tunebat lookup failed', e);
@@ -361,7 +374,7 @@ export default function App() {
         const abJson = await ab.json();
         const tonal = abJson.tonal || {};
         const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
-        if (camelot) return { camelot, subgenre: '' };
+        if (camelot) return { camelot };
       }
     } catch (e) {
       console.error('Metadata fetch failed', e);
@@ -452,7 +465,7 @@ export default function App() {
         alert(`Imported ${newClips.length} tracks`);
         newClips.forEach(c => {
           fetchSongInfo(c.name).then(info => {
-            if (info) updateClip(c.id, { camelot: info.camelot || '', subgenre: info.subgenre || c.subgenre });
+            if (info && info.camelot) updateClip(c.id, { camelot: info.camelot });
           });
         });
       } catch (e) {
@@ -946,6 +959,8 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   const bg = stripe ? `repeating-linear-gradient(45deg, ${baseColor}, ${baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : baseColor;
   const phraseColor = PHRASE_COLORS[clip.phrase];
   const endPhraseColor = PHRASE_COLORS[clip.endPhrase];
+  const camelotBg = CAMELOT_COLORS[clip.camelot] || 'rgba(0,0,0,0.3)';
+  const camelotFg = contrastTextColor(camelotBg);
 
   function startDrag(e) { e.stopPropagation(); e.preventDefault(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
@@ -988,7 +1003,17 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
       )}
 
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
-        <div className="flex items-center justify-between text-sm font-semibold"><span className="truncate mr-2">{clip.name}</span>{clip.camelot && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: CAMELOT_COLORS[clip.camelot] || 'rgba(0,0,0,0.3)', color:'#fff' }}>{clip.camelot}</span>}</div>
+        <div className="flex items-center justify-between text-sm font-semibold">
+          <span className="truncate mr-2">{clip.name}</span>
+          {clip.camelot && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border"
+              style={{ background: camelotBg, color: camelotFg, borderColor: 'rgba(0,0,0,0.6)' }}
+            >
+              {clip.camelot}
+            </span>
+          )}
+        </div>
         <div className="text-[11px] opacity-90">{fmtTime(clip.startSec)} – {fmtTime(clip.endSec)} ({fmtSec2(clip.endSec-clip.startSec)}s)</div>
       </div>
 
