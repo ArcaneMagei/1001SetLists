@@ -201,6 +201,7 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState(null);
   const selectedClip = clips.find(c=>c.id===selectedClipId) || null;
   const [selectedMarkerRef, setSelectedMarkerRef] = useState(null);
+  const [lookupMsgs, setLookupMsgs] = useState({});
 
   // media state
   const [mediaDurationSec, setMediaDurationSec] = useState(0);
@@ -232,20 +233,20 @@ export default function App() {
     const el = timelineRef.current;
     if (!el) return;
     const onWheel = (e) => {
-      if (e.ctrlKey) {
+      if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const rect = el.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const timeAtPointer = (el.scrollLeft + mouseX) / pxPerSec;
-        const delta = clamp(e.deltaY, -100, 100);
-        const factor = Math.exp(-delta / 4000);
+        const factor = Math.exp(-e.deltaY * 0.002);
         const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
         const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
         setZoom(newZoom);
         el.scrollLeft = timeAtPointer * newPxPerSec - mouseX;
       } else {
         e.preventDefault();
-        el.scrollLeft += e.deltaY;
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        el.scrollLeft += delta;
       }
     };
     el.addEventListener('wheel', onWheel, { passive:false });
@@ -343,7 +344,7 @@ export default function App() {
   }
 
   const TUNEBAT_API_KEY = '';
-  async function fetchSongInfo(name) {
+async function fetchSongInfo(name) {
     // Try Tunebat (RapidAPI) first if an API key is supplied
     if (TUNEBAT_API_KEY) {
       try {
@@ -358,10 +359,13 @@ export default function App() {
         const track = tracks.find(t => t.title && t.title.toLowerCase() === name.toLowerCase()) || tracks[0];
         if (track) {
           const camelot = (track.keyCamelot || track.camelot || track.key || '').toUpperCase();
-          if (camelot) return { camelot };
+          if (camelot) return { camelot, msg: 'Found via Tunebat' };
+          return { camelot: '', msg: 'Tunebat: no match' };
         }
+        return { camelot: '', msg: 'Tunebat: no results' };
       } catch (e) {
         console.error('Tunebat lookup failed', e);
+        return { camelot: '', msg: 'Tunebat error' };
       }
     }
     // Fallback to MusicBrainz + AcousticBrainz
@@ -374,12 +378,27 @@ export default function App() {
         const abJson = await ab.json();
         const tonal = abJson.tonal || {};
         const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
-        if (camelot) return { camelot };
+        if (camelot) return { camelot, msg: 'Found via MusicBrainz' };
+        return { camelot: '', msg: 'MusicBrainz: no match' };
       }
+      return { camelot: '', msg: 'MusicBrainz: no results' };
     } catch (e) {
       console.error('Metadata fetch failed', e);
+      return { camelot: '', msg: 'Lookup error' };
     }
-    return null;
+  }
+
+  function lookupCamelot(clip) {
+    if (!clip) return;
+    setLookupMsgs(prev => ({ ...prev, [clip.id]: 'Searching...' }));
+    fetchSongInfo(clip.name).then(info => {
+      if (!info) {
+        setLookupMsgs(prev => ({ ...prev, [clip.id]: 'Lookup failed' }));
+        return;
+      }
+      if (info.camelot) updateClip(clip.id, { camelot: info.camelot });
+      setLookupMsgs(prev => ({ ...prev, [clip.id]: info.msg || (info.camelot ? `Found ${info.camelot}` : 'Not found') }));
+    });
   }
 
   function normalizeMarker(m, clip) {
@@ -465,7 +484,12 @@ export default function App() {
         alert(`Imported ${newClips.length} tracks`);
         newClips.forEach(c => {
           fetchSongInfo(c.name).then(info => {
-            if (info && info.camelot) updateClip(c.id, { camelot: info.camelot });
+            if (!info) {
+              setLookupMsgs(prev => ({ ...prev, [c.id]: 'Lookup failed' }));
+              return;
+            }
+            if (info.camelot) updateClip(c.id, { camelot: info.camelot });
+            setLookupMsgs(prev => ({ ...prev, [c.id]: info.msg || (info.camelot ? `Found ${info.camelot}` : 'Not found') }));
           });
         });
       } catch (e) {
@@ -708,6 +732,8 @@ export default function App() {
         onSelectMarker={(cid, mid) => setSelectedMarkerRef({clipId: cid, markerId: mid})}
         subtypes={subtypes}
         subtypeTypes={subtypeTypes}
+        onLookupCamelot={lookupCamelot}
+        lookupMsg={selectedClip ? lookupMsgs[selectedClip.id] : ''}
       />
 
       {hover && (
@@ -1050,7 +1076,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   );
 }
 
-function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, onUpdateMarker, onDeleteMarker, onSelectMarker, subtypes, subtypeTypes }) {
+function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, onUpdateMarker, onDeleteMarker, onSelectMarker, subtypes, subtypeTypes, onLookupCamelot, lookupMsg }) {
   const defaultSub = Object.keys(subtypes).find(k=> subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || '';
   const [draft, setDraft] = useState({ type: 'transition', subtype: defaultSub, label: '', details: '', startSec: 0, endSec: undefined });
 
@@ -1072,7 +1098,8 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
         <div className="grid grid-cols-2 gap-2">
           <label className="flex items-center gap-2 col-span-2"><span className="w-24">Name</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
           <label className="flex items-center gap-2"><span className="w-24">Deck</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-24">Camelot</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
+          <label className="flex items-center gap-2 col-span-2"><span className="w-24">Camelot</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /><button className="px-1 py-0.5 bg-slate-900 text-white rounded" onClick={()=> onLookupCamelot && onLookupCamelot(clip)}>Lookup</button></label>
+          {lookupMsg && <div className="col-span-2 text-[10px] text-slate-600">{lookupMsg}</div>}
           <label className="flex items-center gap-2"><span className="w-24">Subgenre</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-24">Remix</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
           <label className="flex items-center gap-2"><span className="w-24">Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.phrase||'Buildup'} onChange={(e)=> onChange({ phrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
