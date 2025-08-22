@@ -356,10 +356,10 @@ export default function App() {
   const spotifyTokenRef = useRef('');
   const spotifyTokenExpiryRef = useRef(0);
 
-  const [beatportUser, setBeatportUser] = useState(() => localStorage.getItem('beatportUser') || '');
-  const [beatportPass, setBeatportPass] = useState(() => localStorage.getItem('beatportPass') || '');
-  useEffect(() => localStorage.setItem('beatportUser', beatportUser), [beatportUser]);
-  useEffect(() => localStorage.setItem('beatportPass', beatportPass), [beatportPass]);
+  const [beatportClientId, setBeatportClientId] = useState(() => localStorage.getItem('beatportClientId') || '');
+  const [beatportClientSecret, setBeatportClientSecret] = useState(() => localStorage.getItem('beatportClientSecret') || '');
+  useEffect(() => localStorage.setItem('beatportClientId', beatportClientId), [beatportClientId]);
+  useEffect(() => localStorage.setItem('beatportClientSecret', beatportClientSecret), [beatportClientSecret]);
   const beatportTokenRef = useRef('');
   const beatportTokenExpiryRef = useRef(0);
 
@@ -389,18 +389,17 @@ export default function App() {
   }
 
   async function getBeatportToken() {
-    if (!beatportUser || !beatportPass) return null;
+    if (!beatportClientId || !beatportClientSecret) return null;
     const now = Date.now();
     if (beatportTokenRef.current && now < beatportTokenExpiryRef.current) return beatportTokenRef.current;
     try {
-      const body = `grant_type=password&username=${encodeURIComponent(beatportUser)}&password=${encodeURIComponent(beatportPass)}`;
       const res = await fetch('https://oauth.beatport.com/identity/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': 'Basic ' + btoa(`${beatportUser}:${beatportPass}`)
+          'Authorization': 'Basic ' + btoa(`${beatportClientId}:${beatportClientSecret}`)
         },
-        body
+        body: 'grant_type=client_credentials'
       });
       if (res.ok) {
         const json = await res.json();
@@ -422,44 +421,60 @@ export default function App() {
     const token = await getSpotifyToken();
     if (token) {
       try {
-        const res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${q}`, {
+        let track = null;
+        let res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${q}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
           const json = await res.json();
-          const track = json.tracks?.items?.[0];
-          if (track?.id) {
-            const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
-            if (af.ok) {
-              const afJson = await af.json();
-              if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
-                const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-                const keyName = names[afJson.key];
-                const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
-                const camelot = keyScaleToCamelot(keyName, scale);
-                if (camelot) return { camelot, msg: 'Found via Spotify' };
-                msgs.push('Spotify: no key');
-              } else {
-                msgs.push('Spotify: no key');
-              }
-            } else {
-              const err = await af.text().catch(()=> '—');
-              console.error('Spotify audio-features error', err);
-              msgs.push('Spotify: audio-features failed');
-            }
-          } else {
-            msgs.push('Spotify: no results');
-          }
+          track = json.tracks?.items?.[0];
         } else {
           msgs.push('Spotify: request failed');
+        }
+        if (!track) {
+          const parts = name.split(/\s+[-–]\s+/);
+          if (parts.length === 2) {
+            const [artist, title] = parts;
+            const sq = `track:${encodeURIComponent(title)}%20artist:${encodeURIComponent(artist)}`;
+            res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${sq}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (res.ok) {
+              const json2 = await res.json();
+              track = json2.tracks?.items?.[0];
+            }
+          }
+        }
+        if (track?.id) {
+          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+          if (af.ok) {
+            const afJson = await af.json();
+            if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
+              const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+              const keyName = names[afJson.key];
+              const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
+              const camelot = keyScaleToCamelot(keyName, scale);
+              if (camelot) return { camelot, msg: 'Found via Spotify' };
+              msgs.push('Spotify: no key');
+            } else {
+              msgs.push('Spotify: no key');
+            }
+          } else {
+            const err = await af.text().catch(()=> '—');
+            console.error('Spotify audio-features error', err);
+            msgs.push('Spotify: audio-features failed');
+          }
+        } else {
+          msgs.push('Spotify: no results');
+        }
         }
       } catch (e) {
         console.error('Spotify lookup failed', e);
         msgs.push('Spotify: error');
       }
-    } else {
-      msgs.push('Spotify: no credentials');
-    }
+  } else {
+    msgs.push('Spotify: no credentials');
+  }
 
     // Beatport
     try {
@@ -796,17 +811,17 @@ export default function App() {
             className="px-1 py-0.5 border rounded text-xs w-40"
           />
           <input
-            placeholder="Beatport Username"
-            value={beatportUser}
-            onChange={e=> setBeatportUser(e.target.value)}
+            placeholder="Beatport Client ID"
+            value={beatportClientId}
+            onChange={e=> setBeatportClientId(e.target.value)}
             className="px-1 py-0.5 border rounded text-xs w-32"
           />
           <input
-            placeholder="Beatport Password"
+            placeholder="Beatport Client Secret"
             type="password"
-            value={beatportPass}
-            onChange={e=> setBeatportPass(e.target.value)}
-            className="px-1 py-0.5 border rounded text-xs w-32"
+            value={beatportClientSecret}
+            onChange={e=> setBeatportClientSecret(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-40"
           />
           <button onClick={clearAllClips} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
         </div>
