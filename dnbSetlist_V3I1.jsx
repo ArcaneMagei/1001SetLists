@@ -514,22 +514,33 @@ export default function App() {
         }
         if (track?.id) {
           const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+          let k = null, m = null;
           if (af.ok) {
             const afJson = await af.json();
-            if (Number.isInteger(afJson.key) && Number.isInteger(afJson.mode)) {
-              const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-              const keyName = names[afJson.key];
-              const scale = afJson.mode === 1 ? 'MAJOR' : 'MINOR';
-              const camelot = keyScaleToCamelot(keyName, scale);
-              if (camelot) return { camelot, msg: 'Found via Spotify' };
-              msgs.push('Spotify: no key');
-            } else {
-              msgs.push('Spotify: no key');
-            }
+            k = afJson.key;
+            m = afJson.mode;
           } else {
-            const err = await af.text().catch(()=> '—');
-            console.error('Spotify audio-features error', err);
-            msgs.push('Spotify: audio-features failed');
+            // Fallback to audio-analysis when audio-features fails
+            const aa = await fetch(`https://api.spotify.com/v1/audio-analysis/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+            if (aa.ok) {
+              const aaJson = await aa.json();
+              k = aaJson.track?.key;
+              m = aaJson.track?.mode;
+            } else {
+              const err = await aa.text().catch(()=> '—');
+              console.error('Spotify audio-analysis error', err);
+              msgs.push('Spotify: audio-features failed');
+            }
+          }
+          if (Number.isInteger(k) && Number.isInteger(m)) {
+            const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+            const keyName = names[k];
+            const scale = m === 1 ? 'MAJOR' : 'MINOR';
+            const camelot = keyScaleToCamelot(keyName, scale);
+            if (camelot) return { camelot, msg: 'Found via Spotify' };
+            msgs.push('Spotify: no key');
+          } else {
+            msgs.push('Spotify: no key');
           }
         } else {
           msgs.push('Spotify: no results');
