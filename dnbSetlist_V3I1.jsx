@@ -343,29 +343,31 @@ export default function App() {
     setSelectedMarkerRef(null);
   }
 
-  const SPOTIFY_CLIENT_ID = localStorage.getItem('spotifyClientId') || '';
-  const SPOTIFY_CLIENT_SECRET = localStorage.getItem('spotifyClientSecret') || '';
-  let spotifyToken = '';
-  let spotifyTokenExpiry = 0;
+  const [spotifyClientId, setSpotifyClientId] = useState(() => localStorage.getItem('spotifyClientId') || '');
+  const [spotifyClientSecret, setSpotifyClientSecret] = useState(() => localStorage.getItem('spotifyClientSecret') || '');
+  useEffect(() => localStorage.setItem('spotifyClientId', spotifyClientId), [spotifyClientId]);
+  useEffect(() => localStorage.setItem('spotifyClientSecret', spotifyClientSecret), [spotifyClientSecret]);
+  const spotifyTokenRef = useRef('');
+  const spotifyTokenExpiryRef = useRef(0);
 
   async function getSpotifyToken() {
-    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) return null;
+    if (!spotifyClientId || !spotifyClientSecret) return null;
     const now = Date.now();
-    if (spotifyToken && now < spotifyTokenExpiry) return spotifyToken;
+    if (spotifyTokenRef.current && now < spotifyTokenExpiryRef.current) return spotifyTokenRef.current;
     try {
       const res = await fetch('https://accounts.spotify.com/api/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': 'Basic ' + btoa(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`)
+          'Authorization': 'Basic ' + btoa(`${spotifyClientId}:${spotifyClientSecret}`)
         },
         body: 'grant_type=client_credentials'
       });
       if (res.ok) {
         const json = await res.json();
-        spotifyToken = json.access_token;
-        spotifyTokenExpiry = now + (json.expires_in || 3600) * 1000;
-        return spotifyToken;
+        spotifyTokenRef.current = json.access_token;
+        spotifyTokenExpiryRef.current = now + (json.expires_in || 3600) * 1000;
+        return spotifyTokenRef.current;
       }
     } catch (e) {
       console.error('Spotify token error', e);
@@ -756,6 +758,19 @@ export default function App() {
           <button onClick={exportCSV} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">Export CSV</button>
           <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
           <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
+          <input
+            placeholder="Spotify Client ID"
+            value={spotifyClientId}
+            onChange={e=> setSpotifyClientId(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-32"
+          />
+          <input
+            placeholder="Spotify Client Secret"
+            type="password"
+            value={spotifyClientSecret}
+            onChange={e=> setSpotifyClientSecret(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-40"
+          />
           <button onClick={clearAllClips} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
         </div>
         {mediaInfo.title && (
