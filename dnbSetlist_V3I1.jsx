@@ -404,6 +404,21 @@ export default function App() {
     setSubtypeTypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
   }
 
+  function handleLegendMarkerSubtype(name) {
+    if (selectedMarkerRef) {
+      updateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, { subtype: name, type: subtypeTypes[name] || 'transition' });
+    }
+    setActiveMarkerSubtype(name);
+  }
+
+  function handleLegendSubgenre(name) {
+    if (selectedClipId) updateClip(selectedClipId, { subgenre: name });
+  }
+
+  function handleLegendRemix(name) {
+    if (selectedClipId) updateClip(selectedClipId, { remixType: name });
+  }
+
   function clearAllClips() {
     setClips([]);
     setSelectedClipId(null);
@@ -959,16 +974,18 @@ export default function App() {
       </div>
 
       <div className="mb-2 flex items-center gap-2 flex-shrink-0">
-        <Legend
-          subtypes={subtypes}
-          subtypeTypes={subtypeTypes}
-          onAddSubtype={addSubtype}
-          onUpdateSubtype={updateSubtype}
-          onDeleteSubtype={deleteSubtype}
-          activeMarkerSubtype={activeMarkerSubtype}
-          onSelectMarkerSubtype={setActiveMarkerSubtype}
-        />
-      </div>
+      <Legend
+        subtypes={subtypes}
+        subtypeTypes={subtypeTypes}
+        onAddSubtype={addSubtype}
+        onUpdateSubtype={updateSubtype}
+        onDeleteSubtype={deleteSubtype}
+        activeMarkerSubtype={activeMarkerSubtype}
+        onSelectMarkerSubtype={handleLegendMarkerSubtype}
+        onApplyClipSubgenre={handleLegendSubgenre}
+        onApplyRemixType={handleLegendRemix}
+      />
+    </div>
 
       <Inspector
         clip={selectedClip}
@@ -1055,7 +1072,7 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 }
 
 
-function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype }) {
+function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype, onApplyClipSubgenre, onApplyRemixType }) {
   const [manage, setManage] = useState(false);
   const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
   const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
@@ -1068,7 +1085,7 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
         <div className="pr-3">
           <div className="font-semibold">Clips (Subgenre)</div>
           <div className="flex gap-1 mt-1 flex-wrap">{clipNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+            <div key={name} className="flex items-center gap-1 cursor-pointer" onClick={()=> onApplyClipSubgenre && onApplyClipSubgenre(name)}><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
         <div className="px-3 border-l">
@@ -1091,7 +1108,7 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
         <div className="pl-3 border-l">
           <div className="font-semibold">Remix (Striped)</div>
           <div className="flex gap-1 mt-1 flex-wrap">{remixNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+            <div key={name} className="flex items-center gap-1 cursor-pointer" onClick={()=> onApplyRemixType && onApplyRemixType(name)}><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
       </div>
@@ -1333,8 +1350,8 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
         }
         return (
           <div key={m.id} style={{ position:'absolute', left: l, top: '8%', height: '80%', width: w, background: color, opacity: 0.78, borderRadius: 8, zIndex: 50 }} title={titleText} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }}>
-            <div style={{ position:'absolute', left: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'left')} />
-            <div style={{ position:'absolute', right: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'right')} />
+            <div style={{ position:'absolute', left: -4, top: '50%', width:8, height:20, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'left')} />
+            <div style={{ position:'absolute', right: -4, top: '50%', width:8, height:20, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'right')} />
           </div>
         );
       })}
@@ -1549,17 +1566,31 @@ function buildEnergySeries(clips, samples) {
   }
   return smoothSeries(out, 5, 2);
 }
+function camelotClipCompare(a, b) {
+  const aKey = a.camelot ? 1 : 0;
+  const bKey = b.camelot ? 1 : 0;
+  if (bKey !== aKey) return bKey - aKey;
+  const aLen = (a.endSec - a.startSec);
+  const bLen = (b.endSec - b.startSec);
+  if (bLen !== aLen) return bLen - aLen;
+  return (b.energy || 0) - (a.energy || 0);
+}
+
+function keyAt(t, clips, last = '') {
+  const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+  if (active.length === 0) return last;
+  active.sort(camelotClipCompare);
+  return active[0].camelot || last;
+}
+
 function buildCamelotSeries(clips, samples) {
   const out = new Array(Math.max(1, samples)).fill('');
+  let last = '';
   for (let i = 0; i < out.length; i++) {
     const t = i * SECS_PER_BEAT;
-    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
-    if (active.length === 0) {
-      out[i] = '';
-      continue;
-    }
-    active.sort((a, b) => (b.energy || 0) - (a.energy || 0));
-    out[i] = active[0].camelot || '';
+    const key = keyAt(t, clips, last);
+    out[i] = key;
+    if (key) last = key;
   }
   return out;
 }
@@ -1589,12 +1620,16 @@ function camelotTransitionName(a, b) {
 
 function buildCamelotChangeMarkers(clips) {
   const markers = [];
-  for (let i = 0; i < clips.length - 1; i++) {
-    const a = clips[i];
-    const b = clips[i + 1];
-    const name = camelotTransitionName(a.camelot, b.camelot);
-    if (name) {
-      markers.push({ sec: b.startSec, value: parseInt(b.camelot) || 0, key: b.camelot, name });
+  const times = Array.from(new Set(clips.flatMap(c => [c.startSec, c.endSec]))).sort((a, b) => a - b);
+  let last = '';
+  for (const t of times) {
+    const key = keyAt(t, clips, last);
+    if (key && key !== last) {
+      const name = camelotTransitionName(last, key);
+      if (name) markers.push({ sec: t, value: parseInt(key) || 0, key, name });
+      last = key;
+    } else if (key) {
+      last = key;
     }
   }
   return markers;
