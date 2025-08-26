@@ -7,12 +7,59 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
 
+// - Retrieve Camelot keys via Spotify/Beatport with MusicBrainz fallback
+// - Phrase-driven energy curve with drop marker boosts
+
 const BPM = 174;
 const SECS_PER_BEAT = 60 / BPM;
 const BEATS_PER_PHRASE = 8;
 const BASE_PX_PER_BEAT = 28;
 const DEFAULT_TAIL_PADDING_SEC = 10;
 const ICON_SIZE = 12;
+
+const PHRASE_COLORS = {
+  Intro: "#ffff00",            // yellow
+  Verse: "#d8b4fe",            // lighter purple
+  Buildup: "#ffa500",          // orange
+  "Drop 1": "#ff0000",       // red
+  "Drop 4x4": "#ff00ff",     // neon pink
+  "Drop 2": "#8b0000",       // darker red
+  "Drop fake": "#39ff14",    // neon green
+  "Drop/Verse": "#ff6666",   // lighter red
+  Breakdown: "#00ff00",        // green
+  Outro: "#0000ff",            // blue
+};
+
+// phrase energy deltas are applied around each track's median energy (c.energy)
+// so individual clips can fluctuate roughly ±1 based on their musical phrase
+const PHRASE_DELTA = {
+  Intro: -1,
+  Verse: -0.5,
+  Buildup: 0,
+  'Drop 1': 1,
+  'Drop 4x4': 1,
+  'Drop 2': 0.5,
+  'Drop fake': 0.5,
+  'Drop/Verse': 0,
+  Breakdown: -0.5,
+  Outro: -1,
+};
+
+// default phrase progression map used to infer how a song evolves when
+// start/end phrases are the same. Each phrase lasts ~16 bars at 174bpm.
+const PHRASE_DURATION = 16 * 4 * SECS_PER_BEAT; // seconds for 16 bars
+const NEXT_PHRASE = {
+  Intro: 'Verse',
+  Verse: 'Buildup',
+  Buildup: 'Drop 1',
+  'Drop 1': 'Drop 2',
+  'Drop 2': 'Breakdown',
+  'Drop 4x4': 'Drop 2',
+  'Drop fake': 'Breakdown',
+  'Drop/Verse': 'Breakdown',
+  Breakdown: 'Verse',
+  Outro: 'Outro',
+};
 
 const SUBGENRE_COLORS = {
   Liquid: "#3b82f6",
@@ -53,7 +100,28 @@ const CAMELOT_COLORS = {
   '1B':'#FF6666','2B':'#FF9966','3B':'#FFFF66','4B':'#B2FF66','5B':'#66FF66','6B':'#66FF99',
   '7B':'#66FFFF','8B':'#66CCFF','9B':'#6666FF','10B':'#9966FF','11B':'#FF66FF','12B':'#FF66CC'
 };
+const CAMELOT_VALUE_MAP = {
+  '1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,
+  '1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24
+};
+const VALUE_TO_CAMELOT = Object.fromEntries(Object.entries(CAMELOT_VALUE_MAP).map(([k,v])=>[v,k]));
 const SHAPE_BY_TYPE = { transition: "square", effect: "triangle" };
+
+const KEY_SCALE_TO_CAMELOT = {
+  'C MAJOR':'8B','G MAJOR':'9B','D MAJOR':'10B','A MAJOR':'11B','E MAJOR':'12B','B MAJOR':'1B','F# MAJOR':'2B','C# MAJOR':'3B',
+  'G# MAJOR':'4B','D# MAJOR':'5B','A# MAJOR':'6B','F MAJOR':'7B',
+  'A MINOR':'8A','E MINOR':'9A','B MINOR':'10A','F# MINOR':'11A','C# MINOR':'12A','G# MINOR':'1A','D# MINOR':'2A',
+  'A# MINOR':'3A','F MINOR':'4A','C MINOR':'5A','G MINOR':'6A','D MINOR':'7A'
+};
+
+function keyScaleToCamelot(key, scale) {
+  if (!key) return '';
+  const flats = { BB:'A#', DB:'C#', EB:'D#', GB:'F#', AB:'G#' };
+  let k = key.toUpperCase();
+  k = flats[k] || k;
+  const s = (scale || '').toUpperCase();
+  return KEY_SCALE_TO_CAMELOT[`${k} ${s}`] || '';
+}
 
 function fmtTime(sec) {
   if (isNaN(sec) || sec < 0) sec = 0;
@@ -70,11 +138,83 @@ function uid(prefix = "id") { return `${prefix}_${Date.now().toString(36)}_${Mat
 function secToPx(sec, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return Math.round(sec * pxPerSec); }
 function pxToSec(px, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return px / pxPerSec; }
 function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a2, b2); }
-function seriesToPath(series, width, height, yOffset) { if (!series || series.length === 0) return ""; const stepX = width / (series.length - 1 || 1); const max = Math.max(1, ...series); const points = series.map((v, i) => `${i * stepX},${yOffset + (height - (v / max) * height)}`); return `M ${points.join(" L ")}`; }
-function camelotToValue(k) { if (!k) return 0; const map = {'1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,'1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24}; return map[k] || 0; }
+function seriesToPath(series, width, height, yOffset) {
+  if (!series || series.length === 0) return "";
+  const stepX = width / (series.length - 1 || 1);
+  const max = Math.max(1, ...series);
+  const pts = series.map((v, i) => [i * stepX, yOffset + (height - (v / max) * height)]);
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x, y] = pts[i];
+    const [x0, y0] = pts[i - 1];
+    const [xMinus, yMinus] = pts[i - 2] || [x0, y0];
+    const [xPlus, yPlus] = pts[i + 1] || [x, y];
+    const cp1x = x0 + (x - xMinus) / 6;
+    const cp1y = y0 + (y - yMinus) / 6;
+    const cp2x = x - (xPlus - x0) / 6;
+    const cp2y = y - (yPlus - y0) / 6;
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${x},${y}`;
+  }
+  return d;
+}
+
+function smoothSeries(arr, window = 3, passes = 1) {
+  let out = arr.slice();
+  const half = Math.floor(window / 2);
+  for (let p = 0; p < passes; p++) {
+    const tmp = out.slice();
+    for (let i = 0; i < tmp.length; i++) {
+      let sum = 0, cnt = 0;
+      for (let j = -half; j <= half; j++) {
+        const idx = i + j;
+        if (idx >= 0 && idx < tmp.length) { sum += tmp[idx]; cnt++; }
+      }
+      out[i] = sum / cnt;
+    }
+  }
+  return out;
+}
+function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
+
+function contrastTextColor(hex) {
+  if (!hex) return '#000';
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const r = parseInt(h.substr(0,2),16);
+  const g = parseInt(h.substr(2,2),16);
+  const b = parseInt(h.substr(4,2),16);
+  const luminance = (0.299*r + 0.587*g + 0.114*b)/255;
+  return luminance > 0.6 ? '#000' : '#fff';
+}
 
 function buildDemo() {
-  const mk = (track, name, start, end, sub, remix, camelot, energy) => ({ id: uid('clip'), track, name, startSec: start, endSec: end, baseColor: SUBGENRE_COLORS[sub] || '#3b82f6', remixType: remix, camelot, genre: 'DnB', subgenre: sub, energy, markers: [] });
+  const mk = (
+    track,
+    name,
+    start,
+    end,
+    sub,
+    remix,
+    camelot,
+    energy,
+    phrase = 'Buildup',
+    endPhrase = 'Buildup'
+  ) => ({
+    id: uid('clip'),
+    track,
+    name,
+    startSec: start,
+    endSec: end,
+    baseColor: SUBGENRE_COLORS[sub] || '#3b82f6',
+    remixType: remix,
+    camelot,
+    genre: 'DnB',
+    subgenre: sub,
+    energy,
+    phrase,
+    endPhrase,
+    markers: []
+  });
   return [ mk(0,'Breakbeat Era',2,18,'Liquid','VIP','8A',5), mk(1,'Headcannon (VIP)',10,28,'Neurofunk','Dub','9A',7), mk(2,'City Lights',22,40,'Liquid','None','10A',4), mk(3,'Jungle Tekno',33,50,'Jungle','Genre Flip','11A',6) ];
 }
 
@@ -83,19 +223,59 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const pxPerBeat = BASE_PX_PER_BEAT * zoom;
   const pxPerSec = pxPerBeat / SECS_PER_BEAT;
+  const ROW_GAP_PX = 12;
 
-  const [clips, setClips] = useState(() => { const saved = localStorage.getItem('dnb_timeline_v2'); if (saved) { try { return JSON.parse(saved); } catch {} } return buildDemo(); });
+  // subtype colors (user-manageable)
+  const initialSubtypes = useMemo(()=> ({
+    ...TRANSITION_COLORS,
+    ...EFFECT_COLORS,
+    ...SUBGENRE_COLORS,
+    ...REMIX_COLORS,
+  }), []);
+  const initialSubtypeTypes = useMemo(()=> ({
+    ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])),
+    ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])),
+    ...Object.fromEntries(Object.keys(SUBGENRE_COLORS).map(k=>[k,'clip'])),
+    ...Object.fromEntries(Object.keys(REMIX_COLORS).map(k=>[k,'remix'])),
+  }), []);
+  const [subtypes, setSubtypes] = useState(() => {
+    const saved = localStorage.getItem('dnb_subtypes_v1');
+    if (saved) { try { return JSON.parse(saved); } catch{} }
+    return initialSubtypes;
+  });
+  const [subtypeTypes, setSubtypeTypes] = useState(() => {
+    const saved = localStorage.getItem('dnb_subtype_types_v1');
+    if (saved) { try { return JSON.parse(saved); } catch{} }
+    return initialSubtypeTypes;
+  });
+  useEffect(()=> localStorage.setItem('dnb_subtypes_v1', JSON.stringify(subtypes)), [subtypes]);
+  useEffect(()=> localStorage.setItem('dnb_subtype_types_v1', JSON.stringify(subtypeTypes)), [subtypeTypes]);
+
+  const [clips, setClips] = useState(() => {
+    const saved = localStorage.getItem('dnb_timeline_v2');
+    if (saved) {
+      try {
+        return JSON.parse(saved).map(c => ({
+          ...c,
+          phrase: c.phrase || 'Buildup',
+          endPhrase: c.endPhrase || c.phrase || 'Buildup'
+        }));
+      } catch {}
+    }
+    return buildDemo();
+  });
   useEffect(()=> localStorage.setItem('dnb_timeline_v2', JSON.stringify(clips)), [clips]);
 
   const [selectedClipId, setSelectedClipId] = useState(null);
   const selectedClip = clips.find(c=>c.id===selectedClipId) || null;
   const [selectedMarkerRef, setSelectedMarkerRef] = useState(null);
+  const [lookupMsgs, setLookupMsgs] = useState({});
 
-  // subtype colors (user-manageable)
-  const initialSubtypes = useMemo(()=> ({ ...TRANSITION_COLORS, ...EFFECT_COLORS }), []);
-  const initialSubtypeTypes = useMemo(()=> ({ ...Object.fromEntries(Object.keys(TRANSITION_COLORS).map(k=>[k,'transition'])), ...Object.fromEntries(Object.keys(EFFECT_COLORS).map(k=>[k,'effect'])) }), []);
-  const [subtypeTypes] = useState(initialSubtypeTypes);
-  const [subtypes, setSubtypes] = useState(initialSubtypes);
+  const markerDefault = useMemo(() => {
+    return Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect') || '';
+  }, [subtypes, subtypeTypes]);
+  const [activeMarkerSubtype, setActiveMarkerSubtype] = useState(markerDefault);
+  useEffect(() => { setActiveMarkerSubtype(markerDefault); }, [markerDefault]);
 
   // media state
   const [mediaDurationSec, setMediaDurationSec] = useState(0);
@@ -111,11 +291,12 @@ export default function App() {
   const lastClipEnd = useMemo(()=> Math.max(0, ...clips.map(c => c.endSec || 0)), [clips]);
   const maxEnd = Math.max(120, mediaDurationSec || 0, lastClipEnd) + DEFAULT_TAIL_PADDING_SEC;
   const timelineWidthPx = Math.ceil(maxEnd * pxPerSec) + 300;
-  const containerRef = useRef(null);
+  const timelineRef = useRef(null);
 
   // playhead + player refs
   const [playheadSec, setPlayheadSec] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [volume, setVolume] = useState(1);
   const playerRef = useRef(null); // youtube or sc widget
   const playerTypeRef = useRef(null); // 'youtube' | 'soundcloud'
   const playerReadyRef = useRef(false);
@@ -123,8 +304,43 @@ export default function App() {
   const lastRAF = useRef(null);
 
   useEffect(()=>{
-    const el = containerRef.current; if (!el) return; const onWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; setZoom(z=>clamp(z*factor, MIN_ZOOM, MAX_ZOOM)); } }; el.addEventListener('wheel', onWheel, { passive:false }); return ()=> el.removeEventListener('wheel', onWheel);
+    const el = timelineRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const rect = el.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const timeAtPointer = (el.scrollLeft + mouseX) / pxPerSec;
+        const factor = Math.exp(-e.deltaY * 0.002);
+        const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
+        const newPxPerSec = (BASE_PX_PER_BEAT * newZoom) / SECS_PER_BEAT;
+        setZoom(newZoom);
+        el.scrollLeft = timeAtPointer * newPxPerSec - mouseX;
+      } else {
+        e.preventDefault();
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        el.scrollLeft += delta;
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive:false });
+    return ()=> el.removeEventListener('wheel', onWheel);
+  }, [zoom, pxPerSec]);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey) return;
+      const tl = timelineRef.current;
+      if (!tl) return;
+      if (!tl.contains(e.target)) {
+        e.preventDefault();
+        tl.scrollLeft += e.deltaY;
+      }
+    };
+    window.addEventListener('wheel', handler, { passive: false });
+    return () => window.removeEventListener('wheel', handler);
   }, []);
+
 
   // migrate any legacy marker beat fields into seconds relative to clip
   useEffect(()=>{
@@ -136,8 +352,19 @@ export default function App() {
   }, []);
 
   function addClip(track) {
-    const trackClips = clips.filter(c=>c.track===track); const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0); const gap = 1; const startSec = lastEndT>0? lastEndT+gap : 0; const endSec = startSec + SECS_PER_BEAT * BEATS_PER_PHRASE; const clip = { id: uid('clip'), track, name: 'New Clip', startSec, endSec, baseColor: '#3b82f6', remixType: 'None', camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6, markers: [] };
-    if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); } else alert('Cannot insert: overlaps an existing clip on this track.');
+    const trackClips = clips.filter(c=>c.track===track);
+    const lastEndT = trackClips.reduce((acc,c)=>Math.max(acc, c.endSec), 0);
+    const gap = 1;
+    const startSec = lastEndT>0? lastEndT+gap : 0;
+    const endSec = startSec + 90; // default length 90s so new clips are sizeable
+    const clip = {
+      id: uid('clip'), track, name: 'New Clip', startSec, endSec,
+      baseColor: subtypes['Liquid'] || '#3b82f6', remixType: 'None',
+      camelot: '8A', genre: 'DnB', subgenre: 'Liquid', energy: 6,
+      phrase: 'Buildup', endPhrase: 'Buildup', markers: []
+    };
+    if (noOverlapOnInsert(clip, clips)) { setClips(prev=>[...prev, clip]); setSelectedClipId(clip.id); }
+    else alert('Cannot insert: overlaps an existing clip on this track.');
   }
 
   function updateClip(id, patch) {
@@ -150,8 +377,12 @@ export default function App() {
       const others = prev.filter((_,i)=>i!==idx);
       if (!noOverlap(updated, others)) return prev;
       if (patch.startSec != null && patch.startSec !== current.startSec) {
-        const delta = patch.startSec - current.startSec;
-        updated.markers = (current.markers||[]).map(m => ({ ...m, startSec: m.startSec + delta, endSec: m.endSec != null ? m.endSec + delta : undefined }));
+        const delta = updated.startSec - current.startSec;
+        updated.markers = (current.markers||[]).map(m => ({
+          ...m,
+          startSec: m.startSec + delta,
+          endSec: m.endSec != null ? m.endSec + delta : undefined
+        }));
       }
       const copy = [...prev]; copy[idx]=updated; return copy;
     });
@@ -163,6 +394,237 @@ export default function App() {
   }
   function updateMarker(clipId, markerId, patch) { setClips(prev=> prev.map(c=> { if (c.id!==clipId) return c; return { ...c, markers: (c.markers||[]).map(m=> m.id===markerId ? normalizeMarker({ ...m, ...patch }, c) : m) }; })); }
   function deleteMarker(clipId, markerId) { setClips(prev=> prev.map(c=> c.id===clipId ? { ...c, markers: (c.markers||[]).filter(m=> m.id!==markerId) } : c)); if (selectedMarkerRef && selectedMarkerRef.clipId===clipId && selectedMarkerRef.markerId===markerId) setSelectedMarkerRef(null); }
+
+  // subtype management
+  function addSubtype(name, type, color) {
+    if (!name) return;
+    setSubtypes(prev => ({ ...prev, [name]: color }));
+    setSubtypeTypes(prev => ({ ...prev, [name]: type }));
+  }
+  function updateSubtype(name, patch) {
+    if (!name) return;
+    if (patch.color != null) setSubtypes(prev => ({ ...prev, [name]: patch.color }));
+    if (patch.type) setSubtypeTypes(prev => ({ ...prev, [name]: patch.type }));
+  }
+  function deleteSubtype(name) {
+    setSubtypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
+    setSubtypeTypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
+  }
+
+  function clearAllClips() {
+    setClips([]);
+    setSelectedClipId(null);
+    setSelectedMarkerRef(null);
+  }
+
+  const [spotifyClientId, setSpotifyClientId] = useState(() => localStorage.getItem('spotifyClientId') || '');
+  const [spotifyClientSecret, setSpotifyClientSecret] = useState(() => localStorage.getItem('spotifyClientSecret') || '');
+  useEffect(() => localStorage.setItem('spotifyClientId', spotifyClientId), [spotifyClientId]);
+  useEffect(() => localStorage.setItem('spotifyClientSecret', spotifyClientSecret), [spotifyClientSecret]);
+  const spotifyTokenRef = useRef('');
+  const spotifyTokenExpiryRef = useRef(0);
+
+  const [beatportClientId, setBeatportClientId] = useState(() => localStorage.getItem('beatportClientId') || '');
+  const [beatportClientSecret, setBeatportClientSecret] = useState(() => localStorage.getItem('beatportClientSecret') || '');
+  useEffect(() => localStorage.setItem('beatportClientId', beatportClientId), [beatportClientId]);
+  useEffect(() => localStorage.setItem('beatportClientSecret', beatportClientSecret), [beatportClientSecret]);
+  const beatportTokenRef = useRef('');
+  const beatportTokenExpiryRef = useRef(0);
+
+  async function getSpotifyToken() {
+    if (!spotifyClientId || !spotifyClientSecret) return null;
+    const now = Date.now();
+    if (spotifyTokenRef.current && now < spotifyTokenExpiryRef.current) return spotifyTokenRef.current;
+    try {
+      const res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + btoa(`${spotifyClientId}:${spotifyClientSecret}`)
+        },
+        body: 'grant_type=client_credentials'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        spotifyTokenRef.current = json.access_token;
+        spotifyTokenExpiryRef.current = now + (json.expires_in || 3600) * 1000;
+        return spotifyTokenRef.current;
+      }
+    } catch (e) {
+      console.error('Spotify token error', e);
+    }
+    return null;
+  }
+
+  async function getBeatportToken() {
+    if (!beatportClientId || !beatportClientSecret) return null;
+    const now = Date.now();
+    if (beatportTokenRef.current && now < beatportTokenExpiryRef.current) return beatportTokenRef.current;
+    try {
+      const res = await fetch('https://oauth.beatport.com/identity/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + btoa(`${beatportClientId}:${beatportClientSecret}`)
+        },
+        body: 'grant_type=client_credentials'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        beatportTokenRef.current = json.access_token;
+        beatportTokenExpiryRef.current = now + (json.expires_in || 3600) * 1000;
+        return beatportTokenRef.current;
+      }
+    } catch (e) {
+      console.error('Beatport token error', e);
+    }
+    return null;
+  }
+
+  async function fetchSongInfo(name) {
+    const msgs = [];
+    const q = encodeURIComponent(name);
+
+    // Spotify
+    const token = await getSpotifyToken();
+    if (token) {
+      try {
+        let track = null;
+        let res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${q}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          track = json.tracks?.items?.[0];
+        } else {
+          msgs.push('Spotify: request failed');
+        }
+        if (!track) {
+          const parts = name.split(/\s+[-–]\s+/);
+          if (parts.length === 2) {
+            const [artist, title] = parts;
+            const sq = `track:${encodeURIComponent(title)}%20artist:${encodeURIComponent(artist)}`;
+            res = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&market=US&q=${sq}`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (res.ok) {
+              const json2 = await res.json();
+              track = json2.tracks?.items?.[0];
+            }
+          }
+        }
+        if (track?.id) {
+          const af = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+          let k = null, m = null;
+          if (af.ok) {
+            const afJson = await af.json();
+            k = afJson.key;
+            m = afJson.mode;
+          } else {
+            // Fallback to audio-analysis when audio-features fails
+            const aa = await fetch(`https://api.spotify.com/v1/audio-analysis/${track.id}`, { headers:{ Authorization:`Bearer ${token}` }});
+            if (aa.ok) {
+              const aaJson = await aa.json();
+              k = aaJson.track?.key;
+              m = aaJson.track?.mode;
+            } else {
+              const err = await aa.text().catch(()=> '—');
+              console.error('Spotify audio-analysis error', err);
+              msgs.push('Spotify: audio-features failed');
+            }
+          }
+          if (Number.isInteger(k) && Number.isInteger(m)) {
+            const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+            const keyName = names[k];
+            const scale = m === 1 ? 'MAJOR' : 'MINOR';
+            const camelot = keyScaleToCamelot(keyName, scale);
+            if (camelot) return { camelot, msg: 'Found via Spotify' };
+            msgs.push('Spotify: no key');
+          } else {
+            msgs.push('Spotify: no key');
+          }
+        } else {
+          msgs.push('Spotify: no results');
+        }
+      } catch (e) {
+        console.error('Spotify lookup failed', e);
+        msgs.push('Spotify: error');
+      }
+  } else {
+    msgs.push('Spotify: no credentials');
+  }
+
+    // Beatport
+    try {
+      const bToken = await getBeatportToken();
+      if (!bToken) {
+        msgs.push('Beatport: auth required');
+      } else {
+        const res = await fetch(`https://api.beatport.com/v4/catalog/search?type=tracks&per-page=1&query=${q}`, {
+          headers: { Authorization: `Bearer ${bToken}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const track = json.results?.[0];
+          if (track) {
+            const camelot = (track.key || track.mix?.key || '').toUpperCase();
+            if (camelot) return { camelot, msg: 'Found via Beatport' };
+            msgs.push('Beatport: no match');
+          } else {
+            msgs.push('Beatport: no results');
+          }
+        } else {
+          msgs.push('Beatport: request failed');
+        }
+      }
+    } catch (e) {
+      console.error('Beatport lookup failed', e);
+      msgs.push('Beatport: error');
+    }
+
+    // MusicBrainz
+    try {
+      const mb = await fetch(`https://musicbrainz.org/ws/2/recording/?query=${q}&limit=1&fmt=json`);
+      if (mb.ok) {
+        const mbJson = await mb.json();
+        const rec = mbJson.recordings?.[0];
+        if (rec?.id) {
+          const ab = await fetch(`https://acousticbrainz.org/api/v1/${rec.id}/low-level`);
+          if (ab.ok) {
+            const abJson = await ab.json();
+            const tonal = abJson.tonal || {};
+            const camelot = keyScaleToCamelot(tonal.key_key, tonal.key_scale);
+            if (camelot) return { camelot, msg: 'Found via MusicBrainz' };
+            msgs.push('MusicBrainz: no match');
+          } else {
+            msgs.push('MusicBrainz: lookup failed');
+          }
+        } else {
+          msgs.push('MusicBrainz: no results');
+        }
+      } else {
+        msgs.push('MusicBrainz: request failed');
+      }
+    } catch (e) {
+      console.error('Metadata fetch failed', e);
+      msgs.push('MusicBrainz: error');
+    }
+
+    return { camelot: '', msg: msgs.join(' -> ') || 'Lookup failed' };
+  }
+
+  function lookupCamelot(clip) {
+    if (!clip) return;
+    setLookupMsgs(prev => ({ ...prev, [clip.id]: 'Searching...' }));
+    fetchSongInfo(clip.name).then(info => {
+      if (!info) {
+        setLookupMsgs(prev => ({ ...prev, [clip.id]: 'Lookup failed' }));
+        return;
+      }
+      if (info.camelot) updateClip(clip.id, { camelot: info.camelot });
+      setLookupMsgs(prev => ({ ...prev, [clip.id]: info.msg || (info.camelot ? `Found ${info.camelot}` : 'Not found') }));
+    });
+  }
 
   function normalizeMarker(m, clip) {
     const out = { ...m };
@@ -186,46 +648,74 @@ export default function App() {
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); download(url,'timeline.csv');
   }
   function download(url, filename){ const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
-  function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const data = JSON.parse(String(r.result)); if (data && Array.isArray(data.clips)) { setSubtypes(data.subtypes||initialSubtypes); // preserve if present
-      // setSubtypeTypes not exposed for edit in 3.1.1 but we keep from file if present
-      // eslint-disable-next-line no-unused-expressions
-      data.subtypeTypes; setClips(data.clips); } else if (Array.isArray(data)) { setClips(data); } }catch(e){ alert('Invalid JSON file'); console.error(e); } }; r.readAsText(file); }
+
+  function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const data = JSON.parse(String(r.result)); if (data && Array.isArray(data.clips)) { setSubtypes(data.subtypes||initialSubtypes); setSubtypeTypes(data.subtypeTypes||initialSubtypeTypes); setClips(data.clips); } else if (Array.isArray(data)) { setClips(data); } }catch(e){ alert('Invalid JSON file'); console.error(e); } }; r.readAsText(file); }
   function importYTSetlist(file){
     const r = new FileReader();
     r.onload = () => {
-      const text = String(r.result||'');
-      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-      const newClips = [];
-      for (const line of lines){
-        const m = line.match(/^(\d+):(\d{2})\s+(.*)$/);
-        if (!m) continue;
-        const startSec = Number(m[1])*60 + Number(m[2]);
-        const name = m[3];
-        newClips.push({ id: uid('clip'), track:0, name, startSec, endSec:startSec+60, baseColor:'#3b82f6', remixType:'None', camelot:'', genre:'DnB', subgenre:'Liquid', energy:5, markers:[] });
-      }
-      newClips.sort((a,b)=> a.startSec - b.startSec);
-      // adjust end times based on next start if not overlapping
-      for (let i=0; i<newClips.length; i++){
-        const next = newClips[i+1];
-        if (next){
-          const diff = next.startSec - newClips[i].startSec;
-          if (diff >= 60) newClips[i].endSec = next.startSec;
+      clearAllClips();
+      try {
+        const text = String(r.result || '');
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const newClips = [];
+        for (const line of lines) {
+          const m = line.match(/^(\d+):(\d{2})\s+(.+)$/);
+          if (!m) continue;
+          const startSec = Number(m[1]) * 60 + Number(m[2]);
+          const name = m[3];
+          newClips.push({
+            id: uid('clip'),
+            track: 0,
+            name,
+            startSec,
+            endSec: startSec + 60,
+            baseColor: subtypes['Liquid'] || '#3b82f6',
+            remixType: 'None',
+            camelot: '',
+            genre: 'DnB',
+            subgenre: 'Liquid',
+            energy: 5,
+            phrase: 'Buildup',
+            endPhrase: 'Buildup',
+            markers: []
+          });
         }
-      }
-      const trackEnds = [];
-      let lastDeck = -1;
-      for (const c of newClips){
-        let t = 0;
-        while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
-        if (t === lastDeck) {
-          t++;
-          while(trackEnds[t] && trackEnds[t] > c.startSec) t++;
+        if (newClips.length === 0) {
+          alert('No valid setlist lines found');
+          return;
         }
-        c.track = t;
-        trackEnds[t] = c.endSec;
-        lastDeck = t;
+        newClips.sort((a, b) => a.startSec - b.startSec);
+        // adjust end times based on next start if not overlapping
+        for (let i = 0; i < newClips.length; i++) {
+          const next = newClips[i + 1];
+          if (next) {
+            const diff = next.startSec - newClips[i].startSec;
+            if (diff >= 60) newClips[i].endSec = next.startSec;
+          }
+        }
+        const trackEnds = [];
+        for (const c of newClips) {
+          let t = 0;
+          while (trackEnds[t] != null && trackEnds[t] + 20 > c.startSec) t++;
+          c.track = t;
+          trackEnds[t] = c.endSec;
+        }
+        setClips(newClips);
+        alert(`Imported ${newClips.length} tracks`);
+        newClips.forEach(c => {
+          fetchSongInfo(c.name).then(info => {
+            if (!info) {
+              setLookupMsgs(prev => ({ ...prev, [c.id]: 'Lookup failed' }));
+              return;
+            }
+            if (info.camelot) updateClip(c.id, { camelot: info.camelot });
+            setLookupMsgs(prev => ({ ...prev, [c.id]: info.msg || (info.camelot ? `Found ${info.camelot}` : 'Not found') }));
+          });
+        });
+      } catch (e) {
+        console.error('Setlist import failed', e);
+        alert('Failed to import setlist');
       }
-      setClips(newClips);
     };
     r.readAsText(file);
   }
@@ -254,15 +744,22 @@ export default function App() {
       loadYouTubeAPI(()=>{
         const id = uid('yt');
         const iframe = document.createElement('div'); iframe.id = id; el.appendChild(iframe);
-        playerRef.current = new window.YT.Player(id, { height: '0', width: '0', videoId: extractYouTubeId(link), playerVars: { start: 0, controls: 1 }, events: { onReady: ()=> { playerReadyRef.current = true; try { const d = playerRef.current.getDuration?.() || 0; if (d) setMediaDurationSec(d); const t = playerRef.current.getVideoData?.().title; if (t) setMediaInfo(mi => ({ ...mi, title: t })); } catch {} }, onStateChange: onYTStateChange } });
+        playerRef.current = new window.YT.Player(id, { height: '0', width: '0', videoId: extractYouTubeId(link), playerVars: { start: 0, controls: 1 }, events: { onReady: ()=> { playerReadyRef.current = true; try { const d = playerRef.current.getDuration?.() || 0; if (d) setMediaDurationSec(d); const t = playerRef.current.getVideoData?.().title; if (t) setMediaInfo(mi => ({ ...mi, title: t })); playerRef.current.setVolume?.(volume * 100); } catch {} }, onStateChange: onYTStateChange } });
       });
     } else if (/soundcloud.com/.test(link)) {
       playerTypeRef.current = 'soundcloud';
       loadSoundCloudAPI(()=>{
-        const iframe = document.createElement('iframe'); iframe.id = uid('sc'); iframe.width='100%'; iframe.height='60'; iframe.style.display='block'; iframe.src = 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(link) + '&color=%23ff5500'; el.appendChild(iframe);
+        const iframe = document.createElement('iframe');
+        iframe.id = uid('sc');
+        iframe.width='40';
+        iframe.height='20';
+        iframe.style.display='block';
+        iframe.src = 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(link) + '&color=%23ff5500';
+        el.appendChild(iframe);
         const widget = window.SC.Widget(iframe);
         playerRef.current = widget;
         playerReadyRef.current = true;
+        try { widget.setVolume?.(volume); } catch {}
         try { widget.getDuration?.((ms)=> setMediaDurationSec((ms||0)/1000)); } catch {}
         try { widget.getCurrentSound?.(sound => { if (sound && sound.title) setMediaInfo(mi => ({ ...mi, title: sound.title })); }); } catch {}
       });
@@ -284,6 +781,15 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (playerReadyRef.current && playerRef.current) {
+      if (playerTypeRef.current === 'youtube') {
+        playerRef.current.setVolume?.(volume * 100);
+      } else if (playerTypeRef.current === 'soundcloud') {
+        playerRef.current.setVolume?.(volume);
+      }
+    }
+  }, [volume]);
   // playback loop and sync
   useEffect(()=>{
     function tick(now) {
@@ -328,8 +834,20 @@ export default function App() {
 
   const playPauseRef = useRef(playPauseToggle);
   playPauseRef.current = playPauseToggle;
+
+  const deleteRef = useRef(() => {});
+  deleteRef.current = () => {
+    if (selectedMarkerRef) deleteMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId);
+    else if (selectedClipId) deleteClip(selectedClipId);
+  };
   useEffect(() => {
-    const onKey = (e) => { if (e.code === 'Space') { e.preventDefault(); playPauseRef.current(); } };
+    const onKey = (e) => {
+      const tag = e.target.tagName;
+      const editable = tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable;
+      if (e.code === 'Space') {
+        if (!editable) { e.preventDefault(); playPauseRef.current(); }
+      } else if (e.key === 'Delete') { e.preventDefault(); deleteRef.current(); }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
@@ -348,28 +866,56 @@ export default function App() {
   const [hover, setHover] = useState(null);
 
   return (
-    <div className="min-h-screen p-4 bg-slate-50 text-slate-900" ref={containerRef}>
-      <header className="flex items-center justify-between mb-3">
-        <h1 className="text-2xl font-bold">DnB Live Set Timeline (v3.2)</h1>
-        <div className="flex gap-2 items-center">
-          <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-2 py-1 border rounded" onBlur={(e)=> attachPlayer(e.target.value)} />
-          <div id="player-container" style={{ width:200 }} />
-          <button onClick={playPauseToggle} className="px-3 py-1 rounded bg-slate-900 text-white">{playing ? 'Pause' : 'Play'}</button>
-          <button onClick={()=> seekTo(0)} className="px-2 py-1 rounded bg-white border">Reset Playhead</button>
-          <button onClick={exportJSON} className="px-3 py-1 rounded bg-slate-900 text-white">Export JSON</button>
-          <button onClick={exportCSV} className="px-3 py-1 rounded bg-slate-900 text-white">Export CSV</button>
-          <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
-          <label className="px-3 py-1 bg-white border rounded cursor-pointer">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
+    <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden overscroll-none" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
+      <header className="flex items-center justify-between mb-1 flex-shrink-0 text-xs">
+        <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.2)</h1>
+        <div className="flex gap-1 items-center">
+          <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-1 py-0.5 border rounded text-xs" onBlur={(e)=> attachPlayer(e.target.value)} />
+          <div id="player-container" style={{ width:150 }} />
+          <input type="range" min="0" max="1" step="0.01" value={volume} onChange={e=> setVolume(Number(e.target.value))} className="w-20" title="Volume" />
+          <button onClick={playPauseToggle} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">{playing ? 'Pause' : 'Play'}</button>
+          <button onClick={()=> seekTo(0)} className="px-2 py-1 rounded bg-white border text-xs">Reset</button>
+          <button onClick={exportJSON} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">Export JSON</button>
+          <button onClick={exportCSV} className="px-2 py-1 rounded bg-slate-900 text-white text-xs">Export CSV</button>
+          <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import JSON<input type="file" accept="application/json" className="hidden" onChange={e=> { const f = e.target.files?.[0]; if (f) importJSON(f); }} /></label>
+          <label className="px-2 py-1 bg-white border rounded cursor-pointer text-xs">Import Setlist<input type="file" accept="text/plain" className="hidden" onChange={e=> { const f=e.target.files?.[0]; if(f) importYTSetlist(f); }} /></label>
+          <input
+            placeholder="Spotify Client ID"
+            value={spotifyClientId}
+            onChange={e=> setSpotifyClientId(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-32"
+          />
+          <input
+            placeholder="Spotify Client Secret"
+            type="password"
+            value={spotifyClientSecret}
+            onChange={e=> setSpotifyClientSecret(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-40"
+          />
+          <input
+            placeholder="Beatport Client ID"
+            value={beatportClientId}
+            onChange={e=> setBeatportClientId(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-32"
+          />
+          <input
+            placeholder="Beatport Client Secret"
+            type="password"
+            value={beatportClientSecret}
+            onChange={e=> setBeatportClientSecret(e.target.value)}
+            className="px-1 py-0.5 border rounded text-xs w-40"
+          />
+          <button onClick={clearAllClips} className="px-2 py-1 rounded bg-white border text-xs">Clear</button>
         </div>
         {mediaInfo.title && (
-          <div className="text-xs text-right ml-4">
+          <div className="text-[10px] text-right ml-2">
             <div className="font-semibold">{mediaInfo.title}</div>
             <div>{fmtTime(playheadSec)} / {fmtTime(Math.max(mediaDurationSec - playheadSec,0))} left</div>
           </div>
         )}
       </header>
 
-      <div className="bg-white rounded p-3 shadow overflow-auto">
+      <div ref={timelineRef} className="bg-white rounded p-2 shadow overflow-x-auto overflow-y-hidden flex-1">
         {/* Big overall timeline integrated above the tracks */}
         <div style={{ width: timelineWidthPx }} className="mb-2">
           <BigTimelineHeader
@@ -403,6 +949,7 @@ export default function App() {
                     onHover={setHover}
                     onClearHover={()=> setHover(null)}
                     onSelectMarker={(mid)=> setSelectedMarkerRef({clipId: clip.id, markerId: mid})} selectedMarkerRef={selectedMarkerRef} subtypeTypes={subtypeTypes} subtypes={subtypes}
+                    activeMarkerSubtype={activeMarkerSubtype}
                   />
                 ))}
               </TrackRow>
@@ -410,15 +957,23 @@ export default function App() {
           </div>
 
           {/* Graph below deck 4 */}
-          <div className="mt-4">
+          <div className="mt-2">
             <h3 className="text-sm font-semibold mb-2">Energy & Camelot</h3>
-            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} />
+            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
           </div>
         </div>
       </div>
 
-      <div className="mb-3 flex items-center gap-2">
-        <Legend subtypes={subtypes} subtypeTypes={subtypeTypes} />
+      <div className="mb-2 flex items-center gap-2 flex-shrink-0">
+        <Legend
+          subtypes={subtypes}
+          subtypeTypes={subtypeTypes}
+          onAddSubtype={addSubtype}
+          onUpdateSubtype={updateSubtype}
+          onDeleteSubtype={deleteSubtype}
+          activeMarkerSubtype={activeMarkerSubtype}
+          onSelectMarkerSubtype={setActiveMarkerSubtype}
+        />
       </div>
 
       <Inspector
@@ -432,6 +987,8 @@ export default function App() {
         onSelectMarker={(cid, mid) => setSelectedMarkerRef({clipId: cid, markerId: mid})}
         subtypes={subtypes}
         subtypeTypes={subtypeTypes}
+        onLookupCamelot={lookupCamelot}
+        lookupMsg={selectedClip ? lookupMsgs[selectedClip.id] : ''}
       />
 
       {hover && (
@@ -503,105 +1060,257 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
   );
 }
 
-function Legend({ subtypes, subtypeTypes }) {
-  const types = ['transition', 'effect'];
-  return (
-    <div className="flex gap-6 items-start w-full justify-between">
-      <div className="text-sm">
-        <div className="font-semibold">Clips (Subgenre)</div>
-        <div className="flex gap-2 mt-1">{Object.entries(SUBGENRE_COLORS).map(([k,v]) => (
-          <div key={k} className="flex items-center gap-1"><div style={{width:12,height:12,background:v,borderRadius:3}}/><div className="text-xs">{k}</div></div>
-        ))}</div>
-      </div>
 
-      <div className="text-sm flex-1">
-        <div className="font-semibold">Markers (Subtypes)</div>
-        <div className="mt-1">
-          {types.map(type => (
-            <div key={type} className="mb-2">
-              <div className="text-xs font-medium mb-1">{type[0].toUpperCase() + type.slice(1)}</div>
-              <div className="flex gap-3 flex-wrap items-center">
-                {Object.keys(subtypes).filter(name => (subtypeTypes[name] || 'transition') === type).map(name => (
-                  <div key={name} className="flex items-center gap-2 border px-2 py-1 rounded">
-                    {/* shape changes: triangle for effects, square for transitions */}
-                    {type === 'effect' ? (
-                      <div style={{ width: 0, height: 0, borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `12px solid ${subtypes[name]}` }} />
-                    ) : (
-                      <div style={{width:14,height:14,background: subtypes[name],borderRadius:3}} />
-                    )}
-                    <div className="text-xs">{name}</div>
-                  </div>
-                ))}
+function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype }) {
+  const [manage, setManage] = useState(false);
+  const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
+  const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
+  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
+  const markerItems = markerNames.map(n => ({ name: n, type: subtypeTypes[n] || 'transition' }));
+  return (
+    <div className="relative w-full border rounded p-2 text-xs" onMouseDown={(e)=> e.stopPropagation()}>
+      <button className="absolute top-1 right-1 text-[10px] underline" onMouseDown={(e)=> e.stopPropagation()} onClick={()=> setManage(m=>!m)}>{manage? 'Close':'Manage'}</button>
+      <div className="flex items-start w-full">
+        <div className="pr-3">
+          <div className="font-semibold">Clips (Subgenre)</div>
+          <div className="flex gap-1 mt-1 flex-wrap">{clipNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+          ))}</div>
+        </div>
+        <div className="px-3 border-l">
+          <div className="font-semibold">Markers (Subtypes)</div>
+          <div className="flex gap-2 flex-wrap items-center mt-1">
+            {markerItems.map(({name,type}) => (
+              <div
+                key={name}
+                className={"flex items-center gap-1.5 border px-1.5 py-0.5 rounded cursor-pointer " + (activeMarkerSubtype===name?"ring-2 ring-slate-900":"")}
+                onClick={()=> onSelectMarkerSubtype && onSelectMarkerSubtype(name)}
+              >
+                {type === 'effect'
+                  ? <div style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderBottom: `10px solid ${subtypes[name]}` }} />
+                  : <div style={{width:12,height:12,background: subtypes[name],borderRadius:2}} />}
+                <div className="text-[10px]">{name}</div>
               </div>
+            ))}
+          </div>
+        </div>
+        <div className="pl-3 border-l">
+          <div className="font-semibold">Remix (Striped)</div>
+          <div className="flex gap-1 mt-1 flex-wrap">{remixNames.map(name => (
+            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+          ))}</div>
+        </div>
+      </div>
+      {manage && (
+        <SubtypeManager subtypes={subtypes} subtypeTypes={subtypeTypes} onAdd={onAddSubtype} onUpdate={onUpdateSubtype} onDelete={onDeleteSubtype} />
+      )}
+    </div>
+  );
+}
+
+
+function SubtypeManager({ subtypes, subtypeTypes, onAdd, onUpdate, onDelete }) {
+  const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
+  const markerNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect');
+  const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
+
+  const [newClip, setNewClip] = useState({ name: '', color: '#000000' });
+  const [newMarker, setNewMarker] = useState({ name: '', type: 'transition', color: '#000000' });
+  const [newRemix, setNewRemix] = useState({ name: '', color: '#000000' });
+
+  return (
+    <div className="mt-2 border-t pt-2 grid grid-cols-3 gap-2 text-xs">
+      {/* Clip subgenres */}
+      <div className="pr-2">
+        <div className="font-semibold mb-1">Clips</div>
+        <div className="grid grid-cols-3 gap-1">
+          {clipNames.map(name => (
+            <div key={name} className="flex items-center gap-1 mb-1">
+              <div className="w-20 truncate">{name}</div>
+              <input type="color" className="h-5 w-8" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
             </div>
           ))}
         </div>
+        <div className="flex items-center gap-1 mt-1">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newClip.name} onChange={e=> setNewClip({ ...newClip, name:e.target.value })} />
+          <input type="color" className="h-5 w-8" value={newClip.color} onChange={e=> setNewClip({ ...newClip, color:e.target.value })} />
+          <button className="px-1.5 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newClip.name.trim()) return; onAdd(newClip.name.trim(),'clip',newClip.color); setNewClip({ name:'', color:'#000000' }); }}>Add</button>
+        </div>
       </div>
 
-      <div className="text-sm">
-        <div className="font-semibold">Remix (Striped)</div>
-        <div className="flex gap-2 mt-1">{Object.entries(REMIX_COLORS).map(([k,v]) => (
-          <div key={k} className="flex items-center gap-1"><div style={{width:12,height:12,background: v ? `repeating-linear-gradient(45deg, ${v}, ${v} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:3}}/><div className="text-xs">{k}</div></div>
-        ))}</div>
+      {/* Marker subtypes */}
+      <div className="px-2 border-l">
+        <div className="font-semibold mb-1">Markers</div>
+        <div className="grid grid-cols-3 gap-1">
+          {markerNames.map(name => (
+            <div key={name} className="flex items-center gap-1 mb-1">
+              <div className="w-20 truncate">{name}</div>
+              <select className="px-1 py-0.5 border rounded" value={subtypeTypes[name]||'transition'} onChange={e=> onUpdate(name,{ type:e.target.value })}>
+                <option value="transition">Transition</option>
+                <option value="effect">Effect</option>
+              </select>
+              <input type="color" className="h-5 w-8" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 mt-1">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newMarker.name} onChange={e=> setNewMarker({ ...newMarker, name:e.target.value })} />
+          <select className="px-1 py-0.5 border rounded" value={newMarker.type} onChange={e=> setNewMarker({ ...newMarker, type:e.target.value })}>
+            <option value="transition">Transition</option>
+            <option value="effect">Effect</option>
+          </select>
+          <input type="color" className="h-5 w-8" value={newMarker.color} onChange={e=> setNewMarker({ ...newMarker, color:e.target.value })} />
+          <button className="px-1.5 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newMarker.name.trim()) return; onAdd(newMarker.name.trim(), newMarker.type, newMarker.color); setNewMarker({ name:'', type:'transition', color:'#000000' }); }}>Add</button>
+        </div>
+      </div>
+
+      {/* Remix types */}
+      <div className="pl-2 border-l">
+        <div className="font-semibold mb-1">Remix</div>
+        <div className="grid grid-cols-3 gap-1">
+          {remixNames.map(name => (
+            <div key={name} className="flex items-center gap-1 mb-1">
+              <div className="w-20 truncate">{name}</div>
+              <input type="color" className="h-5 w-8" value={subtypes[name]} onChange={e=> onUpdate(name,{ color:e.target.value })} />
+              <button className="px-1 py-0.5 bg-rose-600 text-white rounded" onClick={()=> onDelete(name)}>x</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 mt-1">
+          <input className="flex-1 px-1 py-0.5 border rounded" placeholder="Name" value={newRemix.name} onChange={e=> setNewRemix({ ...newRemix, name:e.target.value })} />
+          <input type="color" className="h-5 w-8" value={newRemix.color} onChange={e=> setNewRemix({ ...newRemix, color:e.target.value })} />
+          <button className="px-1.5 py-0.5 bg-slate-900 text-white rounded" onClick={()=> { if(!newRemix.name.trim()) return; onAdd(newRemix.name.trim(),'remix',newRemix.color); setNewRemix({ name:'', color:'#000000' }); }}>Add</button>
+        </div>
       </div>
     </div>
   );
 }
 
 function TrackRow({ children, trackIndex, widthPx, pxPerBeat, onAdd }) {
+  const rowRef = useRef(null);
+  const [btnTop, setBtnTop] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      const rect = document.getElementById(`track-${trackIndex}`)?.getBoundingClientRect();
+      if (rect) setBtnTop(rect.top + rect.height / 2);
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update);
+    };
+  }, [trackIndex]);
   return (
-    <div className="mb-3 flex items-start relative">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <div className="px-2 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
-        </div>
-        <div id={`track-${trackIndex}`} className="relative h-28 rounded-xl border overflow-hidden" style={{ width: widthPx }}>
-          <GridBackground pxPerBeat={pxPerBeat} />
-          {children}
-        </div>
+    <div className="mb-1" ref={rowRef}>
+      <div className="flex items-center gap-2 mb-0.5">
+        <div className="px-1.5 py-0.5 bg-slate-800 text-white rounded text-xs">Deck {trackIndex+1}</div>
       </div>
-      <button className="px-2 py-1 rounded bg-white border sticky top-2 right-2" onClick={onAdd}>+ Add Clip</button>
+      <div id={`track-${trackIndex}`} className="relative h-20 rounded-lg border overflow-visible" style={{ width: widthPx }}>
+        <GridBackground pxPerBeat={pxPerBeat} />
+        {children}
+      </div>
+      <button
+        className="fixed right-2 w-6 h-6 rounded-full bg-white border shadow flex items-center justify-center text-base"
+        style={{ top: btnTop }}
+        onClick={onAdd}
+      >
+        +
+      </button>
     </div>
   );
 }
 
 function GridBackground({ pxPerBeat }) {
-  const beatStep = Math.max(1, Math.ceil(8 / pxPerBeat));
+  let beatStep = 1;
+  const minPx = 20;
+  while (beatStep * pxPerBeat < minPx) beatStep *= 2;
   const step = pxPerBeat * beatStep;
-  const phrase = Math.max(step, pxPerBeat * BEATS_PER_PHRASE);
+  const phrase = step * BEATS_PER_PHRASE;
   const style = {
-    backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase - 6}px, rgba(0,0,0,0.12) ${phrase}px)`
+    backgroundImage: `repeating-linear-gradient(to right, rgba(0,0,0,0.04) 0, rgba(0,0,0,0.04) 1px, transparent 1px, transparent ${step}px), repeating-linear-gradient(to right, transparent 0, transparent ${phrase - 2}px, rgba(0,0,0,0.12) ${phrase - 2}px, rgba(0,0,0,0.12) ${phrase}px)`
   };
   return <div className="absolute inset-0" style={style} />;
 }
 
-function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onAddMarker, onUpdateMarker, onDeleteMarker, onHover, onClearHover, onSelectMarker, selectedMarkerRef, subtypeTypes, subtypes }) {
+function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onAddMarker, onUpdateMarker, onDeleteMarker, onHover, onClearHover, onSelectMarker, selectedMarkerRef, subtypeTypes, subtypes, activeMarkerSubtype }) {
   const left = secToPx(clip.startSec, pxPerBeat);
   const width = Math.max(4, secToPx(clip.endSec - clip.startSec, pxPerBeat));
-  const stripe = REMIX_COLORS[clip.remixType] || '';
-  const bg = stripe ? `repeating-linear-gradient(45deg, ${clip.baseColor}, ${clip.baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : clip.baseColor;
+  const baseColor = subtypes[clip.subgenre] || clip.baseColor;
+  const stripe = subtypes[clip.remixType] || '';
+  const bg = stripe ? `repeating-linear-gradient(45deg, ${baseColor}, ${baseColor} 12px, ${stripe} 12px, ${stripe} 24px)` : baseColor;
+  const phraseColor = PHRASE_COLORS[clip.phrase];
+  const endPhraseColor = PHRASE_COLORS[clip.endPhrase];
+  const camelotBg = CAMELOT_COLORS[clip.camelot] || 'rgba(0,0,0,0.3)';
+  const camelotFg = contrastTextColor(camelotBg);
 
-  function startDrag(e) { e.stopPropagation(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+  function startDrag(e) { e.stopPropagation(); e.preventDefault(); onSelect(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const grab = e.clientX - rect.left - left; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left - grab; const newStart = clamp(pxToSec(x, pxPerBeat), 0, rect.width); const dur = clip.endSec - clip.startSec; onUpdate({ startSec: newStart, endSec: newStart + dur }); }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
-  function resizeEdge(e, which) { e.stopPropagation(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); if (which === 'left') { const newStart = clamp(sec, 0, clip.endSec - 0.1); onUpdate({ startSec: newStart }); } else { const newEnd = clamp(sec, clip.startSec + 0.1, 99999); onUpdate({ endSec: newEnd }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+  function resizeEdge(e, which) { e.stopPropagation(); e.preventDefault(); const trackEl = document.getElementById(`track-${clip.track}`); if (!trackEl) return; const rect = trackEl.getBoundingClientRect(); const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const x = ev.clientX - rect.left; const sec = pxToSec(x, pxPerBeat); if (which === 'left') { const newStart = clamp(sec, 0, clip.endSec - 0.1); onUpdate({ startSec: newStart }); } else { const newEnd = clamp(sec, clip.startSec + 0.1, 99999); onUpdate({ endSec: newEnd }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
   function markerWidthPx(m) { const dur = m.endSec != null ? (m.endSec - m.startSec) : 0; return m.endSec != null ? Math.max(6, secToPx(dur, pxPerBeat)) : 4; }
 
   function startDragMarker(e, m, mode) {
-    e.stopPropagation(); const startX = e.clientX; const startStartSec = m.startSec != null ? m.startSec : (clip.startSec); const startEndSec = m.endSec != null ? m.endSec : startStartSec; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const dxPx = ev.clientX - startX; const dxSec = pxToSec(dxPx, pxPerBeat); if (mode === 'body') { let ns = startStartSec + dxSec; let ne = startEndSec + dxSec; ns = clamp(ns, clip.startSec, clip.endSec); ne = clamp(ne, ns, clip.endSec); onUpdateMarker(m.id, { startSec: ns, endSec: m.endSec != null ? ne : undefined }); } else if (mode === 'left') { let ns = startStartSec + dxSec; ns = clamp(ns, clip.startSec, m.endSec != null ? m.endSec : startEndSec); onUpdateMarker(m.id, { startSec: ns }); } else if (mode === 'right') { let ne = startEndSec + dxSec; ne = clamp(ne, m.startSec != null ? m.startSec : clip.startSec, clip.endSec); onUpdateMarker(m.id, { endSec: ne }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); }; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
+    e.stopPropagation(); e.preventDefault(); const startX = e.clientX; const startStartSec = m.startSec != null ? m.startSec : (clip.startSec); const startEndSec = m.endSec != null ? m.endSec : startStartSec; const onMove = (ev) => { if (ev.buttons !== 1) return cleanup(); const dxPx = ev.clientX - startX; const dxSec = pxToSec(dxPx, pxPerBeat); if (mode === 'body') { let ns = startStartSec + dxSec; let ne = startEndSec + dxSec; ns = clamp(ns, clip.startSec, clip.endSec); ne = clamp(ne, ns, clip.endSec); onUpdateMarker(m.id, { startSec: ns, endSec: m.endSec != null ? ne : undefined }); } else if (mode === 'left') { let ns = startStartSec + dxSec; ns = clamp(ns, clip.startSec, m.endSec != null ? m.endSec : startEndSec); onUpdateMarker(m.id, { startSec: ns }); } else if (mode === 'right') { let ne = startEndSec + dxSec; ne = clamp(ne, m.startSec != null ? m.startSec : clip.startSec, clip.endSec); onUpdateMarker(m.id, { endSec: ne }); } }; const cleanup = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', cleanup); document.body.style.userSelect=''; }; document.body.style.userSelect='none'; window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', cleanup); }
 
-  function insertMarkerAtClick(e) { e.stopPropagation(); const rect = e.currentTarget.getBoundingClientRect(); const x = e.clientX - rect.left - left; const secRel = Math.max(0, pxToSec(x, pxPerBeat)); const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || null; const m = { id: uid('m'), type: 'transition', subtype: defaultSubtype, label: '', details: '', startSec: clip.startSec + secRel }; onAddMarker(m); }
+  function insertMarkerAtClick(e) {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const secRel = Math.max(0, pxToSec(x, pxPerBeat));
+    const defaultSubtype = Object.keys(subtypes).find(k => subtypeTypes[k] === 'transition' || subtypeTypes[k] === 'effect') || null;
+    const subtype = activeMarkerSubtype || defaultSubtype;
+    const m = { id: uid('m'), type: subtypeTypes[subtype] || 'transition', subtype, label: '', details: '', startSec: clip.startSec + secRel };
+    onAddMarker(m);
+  }
 
   function showClipHover(e) { const html = '<div><b>' + escapeHtml(clip.name) + '</b></div>' + '<div>' + escapeHtml(clip.genre||'') + (clip.subgenre ? ' / ' + escapeHtml(clip.subgenre) : '') + '</div>' + (clip.energy ? ('<div>Energy: ' + escapeHtml(String(clip.energy)) + '</div>') : '') + (clip.remixType && clip.remixType !== 'None' ? ('<div>Remix: ' + escapeHtml(clip.remixType) + '</div>') : ''); onHover({ x: e.clientX, y: e.clientY, html }); }
 
-  function showMarkerHover(e, m) { const typ = m.type === 'transition' ? 'Transition' : 'Effect'; const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : ''; const sr = (m.startSec ?? clip.startSec) - clip.startSec; const er = m.endSec != null ? (m.endSec - clip.startSec) : null; const html = '<div><b>' + typ + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' + detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` + (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>'; onHover({ x: e.clientX, y: e.clientY, html }); }
+  function showMarkerHover(e, m) {
+    const name = m.subtype || (m.type === 'transition' ? 'Transition' : 'Effect');
+    const detailsHtml = m.details ? ('<div style="max-width:260px;white-space:normal">' + escapeHtml(m.details) + '</div>') : '';
+    const sr = (m.startSec ?? clip.startSec) - clip.startSec;
+    const er = m.endSec != null ? (m.endSec - clip.startSec) : null;
+    const html = '<div><b>' + escapeHtml(name) + (m.label ? ': ' + escapeHtml(m.label) : '') + '</b></div>' +
+      detailsHtml + `<div>Start: ${fmtSec2(sr)}s (${fmtTime(m.startSec ?? clip.startSec)})` +
+      (er != null ? `, End: ${fmtSec2(er)}s (${fmtTime(m.endSec)})` : '') + '</div>';
+    onHover({ x: e.clientX, y: e.clientY, html });
+  }
 
   return (
-    <div className={"absolute rounded-xl border shadow-inner" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+
+    <div className={"absolute rounded-xl border shadow-inner select-none" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
+      {phraseColor && (
+        <div
+          className="absolute left-0 top-0 bottom-0"
+          style={{ width:8, background: phraseColor, boxShadow:'0 0 0 1px rgba(0,0,0,0.6)' }}
+        />
+      )}
+      {endPhraseColor && (
+        <div
+          className="absolute right-0 top-0 bottom-0"
+          style={{ width:8, background: endPhraseColor, boxShadow:'0 0 0 1px rgba(0,0,0,0.6)' }}
+        />
+      )}
+
       <div className="px-3 py-2 text-white" style={{ color: '#fff' }}>
-        <div className="flex items-center justify-between text-sm font-semibold"><span className="truncate mr-2">{clip.name}</span>{clip.camelot && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: CAMELOT_COLORS[clip.camelot] || 'rgba(0,0,0,0.3)', color:'#fff' }}>{clip.camelot}</span>}</div>
+        <div className="flex items-center justify-between text-sm font-semibold">
+          <span className="truncate mr-2">{clip.name}</span>
+          {clip.camelot && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border"
+              style={{ background: camelotBg, color: camelotFg, borderColor: 'rgba(0,0,0,0.6)' }}
+            >
+              {clip.camelot}
+            </span>
+          )}
+        </div>
         <div className="text-[11px] opacity-90">{fmtTime(clip.startSec)} – {fmtTime(clip.endSec)} ({fmtSec2(clip.endSec-clip.startSec)}s)</div>
       </div>
 
@@ -615,11 +1324,13 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
         const color = (m.subtype && subtypes[m.subtype]) || m.color || (MARKER_TYPE_COLORS[m.type] || '#000');
         const shape = SHAPE_BY_TYPE[m.type] || 'square';
         const isSel = selectedMarkerRef && selectedMarkerRef.clipId === clip.id && selectedMarkerRef.markerId === m.id;
+        const markerName = m.subtype || (m.type === 'transition' ? 'Transition' : 'Effect');
+        const titleText = [markerName, m.label, m.details].filter(Boolean).join(' — ');
         if (m.endSec == null) {
           return (
             <div key={m.id} style={{ position: 'absolute', left: l, top: 0, height: '100%', width: ICON_SIZE, zIndex: 70 }}>
-              <div style={{ position: 'absolute', left: ICON_SIZE/2 - 2, top: '8%', height: '84%', width: 4, background: color, borderRadius: 2, boxShadow: '0 1px 6px rgba(0,0,0,0.3)', zIndex: 60, opacity: 1 }} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }} />
-              <div style={{ position: 'absolute', left: ICON_SIZE/2 - ICON_SIZE/2, top: -ICON_SIZE-6, width: ICON_SIZE, height: ICON_SIZE, zIndex: 65, display:'flex', alignItems:'center', justifyContent:'center' }} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} title={m.label || m.type}>
+              <div style={{ position: 'absolute', left: ICON_SIZE/2 - 2, top: '8%', height: '84%', width: 4, background: color, borderRadius: 2, boxShadow: '0 1px 6px rgba(0,0,0,0.3)', zIndex: 60, opacity: 1 }} title={titleText} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }} />
+              <div style={{ position: 'absolute', left: ICON_SIZE/2 - ICON_SIZE/2, top: -ICON_SIZE-6, width: ICON_SIZE, height: ICON_SIZE, zIndex: 65, display:'flex', alignItems:'center', justifyContent:'center' }} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} title={titleText}>
                 {shape === 'square' && <div style={{ width:ICON_SIZE-6, height:ICON_SIZE-6, background: color, boxShadow: isSel ? '0 0 0 4px rgba(0,0,0,0.12)' : undefined }} />}
                 {shape === 'triangle' && <div style={{ width:0, height:0, borderLeft: `${ICON_SIZE/2}px solid transparent`, borderRight: `${ICON_SIZE/2}px solid transparent`, borderBottom: `${ICON_SIZE}px solid ${color}`, transform:'translateY(2px)' }} />}
               </div>
@@ -627,7 +1338,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
           );
         }
         return (
-          <div key={m.id} style={{ position:'absolute', left: l, top: '8%', height: '80%', width: w, background: color, opacity: 0.78, borderRadius: 8, zIndex: 50 }} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }}>
+          <div key={m.id} style={{ position:'absolute', left: l, top: '8%', height: '80%', width: w, background: color, opacity: 0.78, borderRadius: 8, zIndex: 50 }} title={titleText} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }}>
             <div style={{ position:'absolute', left: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'left')} />
             <div style={{ position:'absolute', right: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'right')} />
           </div>
@@ -637,7 +1348,7 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   );
 }
 
-function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, onUpdateMarker, onDeleteMarker, onSelectMarker, subtypes, subtypeTypes }) {
+function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, onUpdateMarker, onDeleteMarker, onSelectMarker, subtypes, subtypeTypes, onLookupCamelot, lookupMsg }) {
   const defaultSub = Object.keys(subtypes).find(k=> subtypeTypes[k] === 'transition') || Object.keys(subtypes)[0] || '';
   const [draft, setDraft] = useState({ type: 'transition', subtype: defaultSub, label: '', details: '', startSec: 0, endSec: undefined });
 
@@ -652,27 +1363,26 @@ function Inspector({ clip, selectedMarkerRef, onChange, onDelete, onAddMarker, o
   function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' || field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
 
   return (
-    <div className="mt-4 p-4 bg-white rounded shadow grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="mt-2 p-2 bg-white rounded shadow grid grid-cols-2 gap-4 text-xs" onMouseDown={(e)=> e.stopPropagation()}>
       <div>
-        <div className="text-lg font-semibold mb-2">Clip Inspector</div>
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <label className="flex items-center gap-2 col-span-2"><span className="w-28">Name</span><input className="flex-1 px-2 py-1 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Deck</span><select className="flex-1 px-2 py-1 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Start (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.startSec)} step={0.01} onChange={(e)=> onChange({ startSec: Number(e.target.value) || 0 })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">End (s)</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={fmtSec2(clip.endSec)} step={0.01} onChange={(e)=> onChange({ endSec: Number(e.target.value) || 0 })} /></label>
-          <div className="col-span-2 text-xs text-slate-600">Duration: {fmtTime(clip.endSec - clip.startSec)} ({fmtSec2((clip.endSec-clip.startSec)/SECS_PER_BEAT)} beats)</div>
-          <label className="flex items-center gap-2"><span className="w-28">Camelot</span><input className="flex-1 px-2 py-1 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Genre</span><input className="flex-1 px-2 py-1 border rounded" value={clip.genre||''} onChange={(e)=> onChange({ genre: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Subgenre</span><select className="flex-1 px-2 py-1 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value, baseColor: SUBGENRE_COLORS[e.target.value] || clip.baseColor })}><option value="">(custom)</option>{Object.keys(SUBGENRE_COLORS).map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Base Color</span><input type="color" className="h-8 w-16" value={clip.baseColor} onChange={(e)=> onChange({ baseColor: e.target.value })} /></label>
-          <label className="flex items-center gap-2"><span className="w-28">Remix</span><select className="flex-1 px-2 py-1 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(REMIX_COLORS).map(k => <option key={k} value={k}>{k}</option>)}</select></label>
-          <label className="flex items-center gap-2"><span className="w-28">Energy</span><input type="number" className="flex-1 px-2 py-1 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
+        <div className="text-sm font-semibold mb-1">Clip Inspector</div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex items-center gap-2 col-span-2"><span className="w-24">Name</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.name} onChange={(e)=> onChange({ name: e.target.value })} /></label>
+          <label className="flex items-center gap-2"><span className="w-24">Deck</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.track} onChange={(e)=> onChange({ track: Number(e.target.value) })}>{Array.from({length:4}).map((_,i)=><option key={i} value={i}>Deck {i+1}</option>)}</select></label>
+          <label className="flex items-center gap-2 col-span-2"><span className="w-24">Camelot</span><input className="flex-1 px-1 py-0.5 border rounded" value={clip.camelot||''} onChange={(e)=> onChange({ camelot: e.target.value })} /><button className="px-1 py-0.5 bg-slate-900 text-white rounded" onClick={()=> onLookupCamelot && onLookupCamelot(clip)}>Lookup</button></label>
+          {lookupMsg && <div className="col-span-2 text-[10px] text-slate-600">{lookupMsg}</div>}
+          <label className="flex items-center gap-2"><span className="w-24">Subgenre</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.subgenre||''} onChange={(e)=> onChange({ subgenre: e.target.value })}><option value="">(custom)</option>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='clip').map(k=> <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Remix</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.remixType} onChange={(e)=> onChange({ remixType: e.target.value })}>{Object.keys(subtypes).filter(k=> subtypeTypes[k]==='remix').map(k => <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.phrase||'Buildup'} onChange={(e)=> onChange({ phrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">End Phrase</span><select className="flex-1 px-1 py-0.5 border rounded" value={clip.endPhrase||'Buildup'} onChange={(e)=> onChange({ endPhrase: e.target.value })}>{Object.keys(PHRASE_COLORS).map(p => <option key={p} value={p}>{p}</option>)}</select></label>
+          <label className="flex items-center gap-2"><span className="w-24">Energy</span><input type="number" className="flex-1 px-1 py-0.5 border rounded" value={clip.energy||5} onChange={(e)=> onChange({ energy: Math.max(1, Math.min(10, Math.round(Number(e.target.value)))) })} /></label>
         </div>
-        <div className="mt-3"><button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
+        <div className="mt-2"><button className="px-2 py-1 bg-rose-600 text-white rounded" onClick={()=> onDelete()}>Delete Clip</button></div>
       </div>
 
       <div>
-        <div className="text-lg font-semibold mb-2">Markers (seconds)</div>
+        <div className="text-sm font-semibold mb-1">Markers (seconds)</div>
         <MarkerEditor
           clip={clip}
           selectedMarkerRef={selectedMarkerRef}
@@ -701,8 +1411,8 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
   function updateField(field, value) { setDraft(d=> ({ ...d, [field]: value })); if (selectedMarkerRef) { const patch = { [field]: value }; if (field === 'startSec' || field === 'endSec') { patch[field] = value === '' || value == null ? undefined : Number(value); } onUpdateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, patch); } }
 
   return (
-    <>
-      <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-3 gap-2">
+      <div className="col-span-2 grid grid-cols-2 gap-2">
         <label className="flex items-center gap-2"><span className="w-20">Type</span>
           <select className="flex-1 px-2 py-1 border rounded" value={draft.type} onChange={(e)=> updateField('type', e.target.value)}>
             <option value="transition">Transition</option>
@@ -716,47 +1426,39 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
         </label>
         <label className="col-span-2 flex items-center gap-2"><span className="w-20">Label</span><input className="flex-1 px-2 py-1 border rounded" value={draft.label} onChange={(e)=> updateField('label', e.target.value)} /></label>
         <label className="col-span-2 flex items-center gap-2"><span className="w-20">Details</span><textarea rows={3} className="flex-1 px-2 py-1 border rounded" value={draft.details} onChange={(e)=> updateField('details', e.target.value)} /></label>
-        <label className="flex items-center gap-2"><span className="w-20">Color</span><input type="color" className="h-8 w-16" value={(draft.subtype && subtypes[draft.subtype]) || draft.color || '#000000'} disabled /></label>
-        <label className="flex items-center gap-2"><span className="w-20">Start (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={fmtSec2(draft.startSec)} onChange={(e)=> updateField('startSec', Math.max(0, Number(e.target.value||0)))} /></label>
-        <label className="flex items-center gap-2"><span className="w-20">End (s)</span><input type="number" step={0.01} className="flex-1 px-2 py-1 border rounded" value={draft.endSec == null ? '' : fmtSec2(draft.endSec)} onChange={(e)=> updateField('endSec', e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)))} /></label>
       </div>
-      <div className="mt-2 flex gap-2">
-        <button className="px-3 py-1 bg-slate-900 text-white rounded" onClick={()=> {
-          const m = { id: uid('m'), type: draft.type, subtype: draft.subtype, label: draft.label, details: draft.details || '', color: (draft.subtype && subtypes[draft.subtype]) || draft.color, startSec: Math.max(clip.startSec, Number(draft.startSec||clip.startSec)) };
-          if (draft.endSec != null) m.endSec = Math.max(m.startSec, Number(draft.endSec));
-          onAddMarker(m);
-        }}>+ Add Marker</button>
-
-        {selectedMarkerRef && <button className="px-3 py-1 bg-amber-600 text-white rounded" onClick={()=> { const sm = selectedMarkerRef; onUpdateMarker(sm.clipId, sm.markerId, { type: draft.type, subtype: draft.subtype, label: draft.label, details: draft.details || '', color: (draft.subtype && subtypes[draft.subtype]) || draft.color, startSec: Number(draft.startSec), endSec: draft.endSec != null ? Math.max(Number(draft.endSec), Number(draft.startSec||0)) : undefined }); }}>Update Marker</button>}
-
-        {selectedMarkerRef && <button className="px-3 py-1 bg-rose-600 text-white rounded" onClick={()=> { const sm = selectedMarkerRef; onDeleteMarker(sm.clipId, sm.markerId); }}>Delete Marker</button>}
-      </div>
-
-      <div className="mt-4">
-        <div className="font-semibold text-sm mb-2">Existing</div>
+      <div className="h-32 overflow-y-auto pr-1 border-l pl-2">
+        <div className="font-semibold text-sm mb-1">Existing</div>
         {(clip.markers||[]).map(m => (
-          <div key={m.id} className="flex items-center gap-2 text-sm mb-1">
+          <div key={m.id} className="flex items-center gap-1 text-sm mb-1">
             <div style={{width:12,height:12,background: (m.subtype && subtypes[m.subtype]) || m.color || (MARKER_TYPE_COLORS[m.type]||'#000'), borderRadius:3}} />
             <button className="text-left flex-1" onClick={()=> onSelectMarker(clip.id, m.id)}>
               <div className="truncate w-32" title={m.label}>{m.label || '(no label)'}</div>
               <div className="text-xs text-slate-600 truncate" title={m.details}>{m.details || ''}</div>
             </button>
-            <div className="w-20 text-right">{m.startSec!=null?`${fmtSec2(m.startSec)}s`:''}</div>
-            <div className="w-20 text-right">{m.endSec!=null?`${fmtSec2(m.endSec)}s`:''}</div>
-            <button className="px-2 py-0.5 bg-white border rounded text-xs" onClick={()=> onUpdateMarker(clip.id, m.id, { endSec: m.endSec!=null ? undefined : (m.startSec + SECS_PER_BEAT * BEATS_PER_PHRASE) })}>{m.endSec!=null ? 'Make Point' : 'Make Interval'}</button>
-            <button className="px-2 py-0.5 bg-rose-600 text-white rounded text-xs" onClick={()=> onDeleteMarker(clip.id, m.id)}>Delete</button>
+            <div className="w-16 text-right">{m.startSec!=null?`${fmtSec2(m.startSec)}s`:''}</div>
+            <div className="w-16 text-right">{m.endSec!=null?`${fmtSec2(m.endSec)}s`:''}</div>
+            <button className="px-1.5 py-0.5 bg-white border rounded text-xs" onClick={()=> onUpdateMarker(clip.id, m.id, m.endSec!=null ? { endSec: undefined, endBeat: undefined } : { endSec: m.startSec + SECS_PER_BEAT * BEATS_PER_PHRASE })}>{m.endSec!=null ? 'Point' : 'Interval'}</button>
+            <button className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-xs" onClick={()=> onDeleteMarker(clip.id, m.id)}>Del</button>
           </div>
         ))}
       </div>
-    </>
+    </div>
   );
 }
 
-function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
+function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playheadSec }) {
   const width = Math.ceil(seconds * pxPerSec);
-  const height = 160;
-  const energyPath = seriesToPath(energySeries, width, height/2, 0);
-  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height/2, height/2);
+  const height = 100;
+  const energyPath = seriesToPath(energySeries, width, height, 0);
+  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height, 0);
+  const gradId = useMemo(() => uid('camGrad'), []);
+  const stops = (camelotSeries||[]).map((v,i) => {
+    const label = VALUE_TO_CAMELOT[v];
+    const color = CAMELOT_COLORS[label] || '#0ea5e9';
+    const offset = (i / ((camelotSeries.length - 1) || 1)) * 100;
+    return <stop key={i} offset={`${offset}%`} stopColor={color} />;
+  });
 
   function onMove(e){
     const rect = e.currentTarget.getBoundingClientRect();
@@ -771,20 +1473,91 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover }) {
   }
   function onLeave(){ onHover?.(null); }
 
+  const playheadX = Math.round(playheadSec * pxPerSec);
+
   return (
     <div style={{ width, position:'relative' }} onMouseMove={onMove} onMouseLeave={onLeave}>
       <svg width={width} height={height}>
-        <rect x={0} y={0} width={width} height={height/2} fill="rgba(34,197,94,0.06)" />
-        <rect x={0} y={height/2} width={width} height={height/2} fill="rgba(59,130,246,0.06)" />
-        <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" />
-        <path d={camelotPath} fill="none" strokeWidth={2} stroke="#0ea5e9" />
+        <defs>
+          <linearGradient id={gradId} x1="0" x2="100%" y1="0" y2="0">{stops}</linearGradient>
+        </defs>
+        <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={camelotPath} fill="none" strokeWidth={2} stroke={`url(#${gradId})`} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
+      <div className="absolute top-0 bottom-0 w-[2px] bg-red-500" style={{ left: playheadX }} />
     </div>
   );
 }
 
-function buildEnergySeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } const maxEnergy = Math.max(...active.map(a=>a.energy||0)); out[i] = maxEnergy + (active.length-1); } return out; }
-function buildCamelotSeries(clips, samples) { const out = new Array(Math.max(1, samples)).fill(0); for (let i=0;i<out.length;i++) { const t = i * SECS_PER_BEAT; const active = clips.filter(c => c.startSec <= t && t < c.endSec); if (active.length === 0) { out[i]=0; continue; } active.sort((a,b)=> (b.energy||0)-(a.energy||0)); out[i] = camelotToValue(active[0].camelot||''); } return out; }
+const RAMP_BARS = 8;
+const RAMP_DURATION = RAMP_BARS * 4 * SECS_PER_BEAT;
+
+function clipEnergyAt(c, t) {
+  const base = c.energy || 5;
+  // determine current segment and neighbouring phrases
+  let phrase = c.phrase || 'Buildup';
+  let segStart = c.startSec;
+  let prevPhrase = phrase;
+  while (segStart + PHRASE_DURATION <= t && segStart + PHRASE_DURATION < c.endSec) {
+    prevPhrase = phrase;
+    segStart += PHRASE_DURATION;
+    phrase = NEXT_PHRASE[phrase] || phrase;
+  }
+  const segEnd = Math.min(c.endSec, segStart + PHRASE_DURATION);
+  const nextPhrase = (segEnd >= c.endSec) ? (c.endPhrase || phrase) : (NEXT_PHRASE[phrase] || phrase);
+  const ePrev = base + (PHRASE_DELTA[prevPhrase] || 0);
+  const eCurr = base + (PHRASE_DELTA[phrase] || 0);
+  const eNext = base + (PHRASE_DELTA[nextPhrase] || 0);
+  if (phrase === 'Buildup') {
+    const ratio = (t - segStart) / Math.max(0.001, segEnd - segStart);
+    return clamp(ePrev + (eNext - ePrev) * ratio, 1, 10);
+  } else {
+    if (eNext < eCurr) {
+      const rampStart = segEnd - RAMP_DURATION;
+      if (t >= rampStart) {
+        const r = (t - rampStart) / Math.max(0.001, segEnd - rampStart);
+        return clamp(eCurr + (eNext - eCurr) * r, 1, 10);
+      }
+    }
+    return clamp(eCurr, 1, 10);
+  }
+}
+
+function buildEnergySeries(clips, samples) {
+  const out = new Array(Math.max(1, samples)).fill(0);
+  const specials = ['DropSwap','DoubleDrop','Drop fake','Drop 4x4'];
+  for (let i = 0; i < out.length; i++) {
+    const t = i * SECS_PER_BEAT;
+    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+    if (active.length === 0) { out[i] = 0; continue; }
+    let base = 0;
+    let bonus = Math.max(0, active.length - 1) * 0.5; // overlapping tracks raise energy
+    for (const c of active) {
+      base = Math.max(base, clipEnergyAt(c, t));
+      for (const m of c.markers || []) {
+        if (specials.includes(m.subtype) && t >= m.startSec && t < m.startSec + PHRASE_DURATION) {
+          bonus += 0.5;
+        }
+      }
+    }
+    out[i] = Math.min(10, base + bonus);
+  }
+  return smoothSeries(out, 5, 2);
+}
+function buildCamelotSeries(clips, samples) {
+  const out = new Array(Math.max(1, samples)).fill(0);
+  for (let i = 0; i < out.length; i++) {
+    const t = i * SECS_PER_BEAT;
+    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+    if (active.length === 0) {
+      out[i] = 0;
+      continue;
+    }
+    active.sort((a, b) => (b.energy || 0) - (a.energy || 0));
+    out[i] = camelotToValue(active[0].camelot || '');
+  }
+  return out;
+}
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   return String(s).replace(/[&<>"']/g, (c) => map[c]);
@@ -808,18 +1581,3 @@ function onPlayheadMouseDown(e, pxPerBeat, maxEnd, setPlayheadSec) {
   window.addEventListener('mouseup', cleanup);
 }
 
-// ----------------------------
-// Tiny dev-time sanity tests
-// ----------------------------
-if (typeof window !== 'undefined' && !window.__DNB_TL_TESTED__) {
-  window.__DNB_TL_TESTED__ = true;
-  try {
-    console.assert(fmtSec2(1.234) === '1.23', 'fmtSec2 rounds down');
-    console.assert(fmtSec2(1.235) === '1.24', 'fmtSec2 rounds up');
-    console.assert(fmtTime(65) === '1:05', 'fmtTime mm:ss');
-    console.assert(pxToSec(secToPx(12.34, 28), 28) > 12 && pxToSec(secToPx(12.34, 28), 28) < 12.7, 'px<->sec roughly invert');
-    console.assert(escapeHtml('<a>"\' + "'" + '&') === '&lt;a&gt;&quot;&#39;&amp;', 'escapeHtml mapping');
-  } catch (e) {
-    console.warn('Sanity tests failed', e);
-  }
-}
