@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// DnB Live Set Timeline — v3.2
+// DnB Live Set Timeline — v3.4
 // - Markers move with clips
 // - Spacebar toggles play/pause
 // - Display media title and timing
@@ -100,11 +100,6 @@ const CAMELOT_COLORS = {
   '1B':'#FF6666','2B':'#FF9966','3B':'#FFFF66','4B':'#B2FF66','5B':'#66FF66','6B':'#66FF99',
   '7B':'#66FFFF','8B':'#66CCFF','9B':'#6666FF','10B':'#9966FF','11B':'#FF66FF','12B':'#FF66CC'
 };
-const CAMELOT_VALUE_MAP = {
-  '1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,
-  '1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24
-};
-const VALUE_TO_CAMELOT = Object.fromEntries(Object.entries(CAMELOT_VALUE_MAP).map(([k,v])=>[v,k]));
 const SHAPE_BY_TYPE = { transition: "square", effect: "triangle" };
 
 const KEY_SCALE_TO_CAMELOT = {
@@ -138,10 +133,10 @@ function uid(prefix = "id") { return `${prefix}_${Date.now().toString(36)}_${Mat
 function secToPx(sec, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return Math.round(sec * pxPerSec); }
 function pxToSec(px, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return px / pxPerSec; }
 function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a2, b2); }
-function seriesToPath(series, width, height, yOffset) {
+function seriesToPath(series, width, height, yOffset, maxVal) {
   if (!series || series.length === 0) return "";
   const stepX = width / (series.length - 1 || 1);
-  const max = Math.max(1, ...series);
+  const max = maxVal ?? Math.max(1, ...series);
   const pts = series.map((v, i) => [i * stepX, yOffset + (height - (v / max) * height)]);
   let d = `M ${pts[0][0]},${pts[0][1]}`;
   for (let i = 1; i < pts.length; i++) {
@@ -174,8 +169,6 @@ function smoothSeries(arr, window = 3, passes = 1) {
   }
   return out;
 }
-function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
-
 function contrastTextColor(hex) {
   if (!hex) return '#000';
   let h = hex.replace('#', '');
@@ -862,13 +855,14 @@ export default function App() {
 
   const energySeries = useMemo(()=> buildEnergySeries(clips, Math.ceil(maxEnd / SECS_PER_BEAT)), [clips, maxEnd]);
   const camelotSeries = useMemo(()=> buildCamelotSeries(clips, Math.ceil(maxEnd / SECS_PER_BEAT)), [clips, maxEnd]);
+  const camelotMarkers = useMemo(()=> buildCamelotChangeMarkers(clips), [clips]);
 
   const [hover, setHover] = useState(null);
 
   return (
     <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden overscroll-none" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
       <header className="flex items-center justify-between mb-1 flex-shrink-0 text-xs">
-        <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.2)</h1>
+          <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.4)</h1>
         <div className="flex gap-1 items-center">
           <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-1 py-0.5 border rounded text-xs" onBlur={(e)=> attachPlayer(e.target.value)} />
           <div id="player-container" style={{ width:150 }} />
@@ -959,7 +953,7 @@ export default function App() {
           {/* Graph below deck 4 */}
           <div className="mt-2">
             <h3 className="text-sm font-semibold mb-2">Energy & Camelot</h3>
-            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
+            <Plots energySeries={energySeries} camelotSeries={camelotSeries} camelotMarkers={camelotMarkers} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
           </div>
         </div>
       </div>
@@ -1447,14 +1441,14 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
   );
 }
 
-function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playheadSec }) {
+function Plots({ energySeries, camelotSeries, camelotMarkers, pxPerSec, seconds, onHover, playheadSec }) {
   const width = Math.ceil(seconds * pxPerSec);
   const height = 100;
   const energyPath = seriesToPath(energySeries, width, height, 0);
-  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height, 0);
+  const camelotNums = (camelotSeries||[]).map(k=> parseInt(k) || 0);
+  const camelotPath = seriesToPath(camelotNums, width, height, 0, 12);
   const gradId = useMemo(() => uid('camGrad'), []);
-  const stops = (camelotSeries||[]).map((v,i) => {
-    const label = VALUE_TO_CAMELOT[v];
+  const stops = (camelotSeries||[]).map((label,i) => {
     const color = CAMELOT_COLORS[label] || '#0ea5e9';
     const offset = (i / ((camelotSeries.length - 1) || 1)) * 100;
     return <stop key={i} offset={`${offset}%`} stopColor={color} />;
@@ -1467,7 +1461,7 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playhe
     const idx = Math.round(ratio * (energySeries.length - 1));
     const tSec = idx * SECS_PER_BEAT;
     const energy = energySeries[idx] ?? 0;
-    const cam = camelotSeries[idx] ?? 0;
+    const cam = camelotSeries[idx] ?? '';
     const html = `<div><b>${fmtTime(tSec)} (${fmtSec2(tSec)}s)</b></div><div>Energy: ${energy}</div><div>Camelot: ${cam}</div>`;
     onHover?.({ x: e.clientX, y: e.clientY, html });
   }
@@ -1483,6 +1477,17 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playhe
         </defs>
         <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" strokeLinecap="round" strokeLinejoin="round" />
         <path d={camelotPath} fill="none" strokeWidth={2} stroke={`url(#${gradId})`} strokeLinecap="round" strokeLinejoin="round" />
+        {(camelotMarkers||[]).map((m,i)=>{
+          const x = Math.round(m.sec * pxPerSec);
+          const y = height - (m.value/12)*height;
+          const color = CAMELOT_COLORS[m.key] || '#000';
+          return (
+            <g key={i}>
+              <circle cx={x} cy={y} r={4} fill={color} stroke="#000" />
+              <text x={x+6} y={y-6} fontSize={10} fill="#000">{m.name}</text>
+            </g>
+          );
+        })}
       </svg>
       <div className="absolute top-0 bottom-0 w-[2px] bg-red-500" style={{ left: playheadX }} />
     </div>
@@ -1545,18 +1550,54 @@ function buildEnergySeries(clips, samples) {
   return smoothSeries(out, 5, 2);
 }
 function buildCamelotSeries(clips, samples) {
-  const out = new Array(Math.max(1, samples)).fill(0);
+  const out = new Array(Math.max(1, samples)).fill('');
   for (let i = 0; i < out.length; i++) {
     const t = i * SECS_PER_BEAT;
     const active = clips.filter(c => c.startSec <= t && t < c.endSec);
     if (active.length === 0) {
-      out[i] = 0;
+      out[i] = '';
       continue;
     }
     active.sort((a, b) => (b.energy || 0) - (a.energy || 0));
-    out[i] = camelotToValue(active[0].camelot || '');
+    out[i] = active[0].camelot || '';
   }
   return out;
+}
+
+function camelotTransitionName(a, b) {
+  if (!a || !b) return '';
+  if (a === b) return 'Perfectly Harmonic';
+  const numA = parseInt(a);
+  const numB = parseInt(b);
+  const letA = a.slice(-1);
+  const letB = b.slice(-1);
+  const diff = (numB - numA + 12) % 12;
+  if (letA === letB) {
+    if (diff === 1) return 'Energy Boost';
+    if (diff === 11) return 'Lower Energy';
+    if (diff === 7) return 'Raising energy';
+    if (diff === 2) return 'Energy Boost ++';
+  } else {
+    if (diff === 0) return 'Relative Major <-> minor Switch';
+    if (letA === 'A' && letB === 'B' && diff === 11) return 'Sub Dominant Key';
+    if (letA === 'B' && letB === 'A' && diff === 1) return 'Sub Dominant Key';
+    if (letA === 'A' && letB === 'B' && diff === 3) return 'Mood Shifter';
+    if (letA === 'B' && letB === 'A' && diff === 9) return 'Mood Shifter';
+  }
+  return '';
+}
+
+function buildCamelotChangeMarkers(clips) {
+  const markers = [];
+  for (let i = 0; i < clips.length - 1; i++) {
+    const a = clips[i];
+    const b = clips[i + 1];
+    const name = camelotTransitionName(a.camelot, b.camelot);
+    if (name) {
+      markers.push({ sec: b.startSec, value: parseInt(b.camelot) || 0, key: b.camelot, name });
+    }
+  }
+  return markers;
 }
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
