@@ -1620,16 +1620,30 @@ function camelotTransitionName(a, b) {
 
 function buildCamelotChangeMarkers(clips) {
   const markers = [];
-  const times = Array.from(new Set(clips.flatMap(c => [c.startSec, c.endSec]))).sort((a, b) => a - b);
+  const events = [];
+  for (const c of clips) {
+    events.push({ t: c.startSec, type: 'start', clip: c });
+    events.push({ t: c.endSec, type: 'end', clip: c });
+  }
+  events.sort((a, b) => a.t - b.t || (a.type === 'end' ? -1 : 1));
   let last = '';
-  for (const t of times) {
-    const key = keyAt(t, clips, last);
-    if (key && key !== last) {
-      const name = camelotTransitionName(last, key);
-      if (name) markers.push({ sec: t, value: parseInt(key) || 0, key, name });
-      last = key;
-    } else if (key) {
-      last = key;
+  for (const ev of events) {
+    if (ev.type === 'start') {
+      const prev = keyAt(ev.t - 0.001, clips, last);
+      const next = ev.clip.camelot;
+      if (prev && next) {
+        const name = camelotTransitionName(prev, next);
+        if (name) markers.push({ sec: ev.t, value: parseInt(next) || 0, key: next, name });
+      }
+      last = keyAt(ev.t, clips, last);
+    } else {
+      const prev = keyAt(ev.t - 0.001, clips, last);
+      const next = keyAt(ev.t, clips, last);
+      if (prev && next && prev !== next) {
+        const name = camelotTransitionName(prev, next);
+        if (name) markers.push({ sec: ev.t, value: parseInt(next) || 0, key: next, name });
+      }
+      last = next;
     }
   }
   return markers;
