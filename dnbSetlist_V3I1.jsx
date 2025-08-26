@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // - Display media title and timing
 // - Import YouTube setlists
 // - Clips can move decks & sticky Add Clip button
+
 // - Retrieve Camelot keys via Spotify/Beatport with MusicBrainz fallback
 // - Phrase-driven energy curve with drop marker boosts
 
@@ -647,6 +648,7 @@ export default function App() {
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); download(url,'timeline.csv');
   }
   function download(url, filename){ const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+
   function importJSON(file){ const r=new FileReader(); r.onload=()=>{ try{ const data = JSON.parse(String(r.result)); if (data && Array.isArray(data.clips)) { setSubtypes(data.subtypes||initialSubtypes); setSubtypeTypes(data.subtypeTypes||initialSubtypeTypes); setClips(data.clips); } else if (Array.isArray(data)) { setClips(data); } }catch(e){ alert('Invalid JSON file'); console.error(e); } }; r.readAsText(file); }
   function importYTSetlist(file){
     const r = new FileReader();
@@ -788,7 +790,6 @@ export default function App() {
       }
     }
   }, [volume]);
-
   // playback loop and sync
   useEffect(()=>{
     function tick(now) {
@@ -833,6 +834,7 @@ export default function App() {
 
   const playPauseRef = useRef(playPauseToggle);
   playPauseRef.current = playPauseToggle;
+
   const deleteRef = useRef(() => {});
   deleteRef.current = () => {
     if (selectedMarkerRef) deleteMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId);
@@ -1279,7 +1281,9 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
   }
 
   return (
+
     <div className={"absolute rounded-xl border shadow-inner select-none" + (selected ? " ring-2 ring-sky-500" : "")} style={{ left, width, background: bg, cursor: 'grab', top: '10%', height: '80%' }} onMouseDown={startDrag} onMouseEnter={showClipHover} onMouseLeave={() => onClearHover()} onClick={(e) => { e.stopPropagation(); onSelect(); }}>
+
       <div className="absolute top-0 left-0 right-0 h-3 bg-black/10 hover:bg-black/20 cursor-crosshair" onClick={insertMarkerAtClick} title="Click to add a marker here" />
 
       {phraseColor && (
