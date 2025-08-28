@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// DnB Live Set Timeline — v3.2
+// DnB Live Set Timeline — v3.4
 // - Markers move with clips
 // - Spacebar toggles play/pause
 // - Display media title and timing
@@ -100,11 +100,6 @@ const CAMELOT_COLORS = {
   '1B':'#FF6666','2B':'#FF9966','3B':'#FFFF66','4B':'#B2FF66','5B':'#66FF66','6B':'#66FF99',
   '7B':'#66FFFF','8B':'#66CCFF','9B':'#6666FF','10B':'#9966FF','11B':'#FF66FF','12B':'#FF66CC'
 };
-const CAMELOT_VALUE_MAP = {
-  '1A':1,'2A':2,'3A':3,'4A':4,'5A':5,'6A':6,'7A':7,'8A':8,'9A':9,'10A':10,'11A':11,'12A':12,
-  '1B':13,'2B':14,'3B':15,'4B':16,'5B':17,'6B':18,'7B':19,'8B':20,'9B':21,'10B':22,'11B':23,'12B':24
-};
-const VALUE_TO_CAMELOT = Object.fromEntries(Object.entries(CAMELOT_VALUE_MAP).map(([k,v])=>[v,k]));
 const SHAPE_BY_TYPE = { transition: "square", effect: "triangle" };
 
 const KEY_SCALE_TO_CAMELOT = {
@@ -138,10 +133,10 @@ function uid(prefix = "id") { return `${prefix}_${Date.now().toString(36)}_${Mat
 function secToPx(sec, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return Math.round(sec * pxPerSec); }
 function pxToSec(px, pxPerBeat) { const pxPerSec = pxPerBeat / SECS_PER_BEAT; return px / pxPerSec; }
 function intervalsOverlap(a1, a2, b1, b2) { return Math.max(a1, b1) < Math.min(a2, b2); }
-function seriesToPath(series, width, height, yOffset) {
+function seriesToPath(series, width, height, yOffset, maxVal) {
   if (!series || series.length === 0) return "";
   const stepX = width / (series.length - 1 || 1);
-  const max = Math.max(1, ...series);
+  const max = maxVal ?? Math.max(1, ...series);
   const pts = series.map((v, i) => [i * stepX, yOffset + (height - (v / max) * height)]);
   let d = `M ${pts[0][0]},${pts[0][1]}`;
   for (let i = 1; i < pts.length; i++) {
@@ -174,8 +169,6 @@ function smoothSeries(arr, window = 3, passes = 1) {
   }
   return out;
 }
-function camelotToValue(k) { if (!k) return 0; return CAMELOT_VALUE_MAP[k] || 0; }
-
 function contrastTextColor(hex) {
   if (!hex) return '#000';
   let h = hex.replace('#', '');
@@ -409,6 +402,21 @@ export default function App() {
   function deleteSubtype(name) {
     setSubtypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
     setSubtypeTypes(prev => { const cp={...prev}; delete cp[name]; return cp; });
+  }
+
+  function handleLegendMarkerSubtype(name) {
+    if (selectedMarkerRef) {
+      updateMarker(selectedMarkerRef.clipId, selectedMarkerRef.markerId, { subtype: name, type: subtypeTypes[name] || 'transition' });
+    }
+    setActiveMarkerSubtype(name);
+  }
+
+  function handleLegendSubgenre(name) {
+    if (selectedClipId) updateClip(selectedClipId, { subgenre: name });
+  }
+
+  function handleLegendRemix(name) {
+    if (selectedClipId) updateClip(selectedClipId, { remixType: name });
   }
 
   function clearAllClips() {
@@ -862,13 +870,14 @@ export default function App() {
 
   const energySeries = useMemo(()=> buildEnergySeries(clips, Math.ceil(maxEnd / SECS_PER_BEAT)), [clips, maxEnd]);
   const camelotSeries = useMemo(()=> buildCamelotSeries(clips, Math.ceil(maxEnd / SECS_PER_BEAT)), [clips, maxEnd]);
+  const camelotMarkers = useMemo(()=> buildCamelotChangeMarkers(clips), [clips]);
 
   const [hover, setHover] = useState(null);
 
   return (
     <div className="h-screen p-2 bg-slate-50 text-slate-900 flex flex-col overflow-hidden overscroll-none" onMouseDown={() => { setSelectedClipId(null); setSelectedMarkerRef(null); }}>
       <header className="flex items-center justify-between mb-1 flex-shrink-0 text-xs">
-        <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.2)</h1>
+          <h1 className="text-lg font-bold">DnB Live Set Timeline (v3.4)</h1>
         <div className="flex gap-1 items-center">
           <input placeholder="YouTube or SoundCloud URL" id="media-url" className="px-1 py-0.5 border rounded text-xs" onBlur={(e)=> attachPlayer(e.target.value)} />
           <div id="player-container" style={{ width:150 }} />
@@ -959,22 +968,24 @@ export default function App() {
           {/* Graph below deck 4 */}
           <div className="mt-2">
             <h3 className="text-sm font-semibold mb-2">Energy & Camelot</h3>
-            <Plots energySeries={energySeries} camelotSeries={camelotSeries} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
+            <Plots energySeries={energySeries} camelotSeries={camelotSeries} camelotMarkers={camelotMarkers} pxPerSec={pxPerSec} seconds={maxEnd} onHover={setHover} playheadSec={playheadSec} />
           </div>
         </div>
       </div>
 
       <div className="mb-2 flex items-center gap-2 flex-shrink-0">
-        <Legend
-          subtypes={subtypes}
-          subtypeTypes={subtypeTypes}
-          onAddSubtype={addSubtype}
-          onUpdateSubtype={updateSubtype}
-          onDeleteSubtype={deleteSubtype}
-          activeMarkerSubtype={activeMarkerSubtype}
-          onSelectMarkerSubtype={setActiveMarkerSubtype}
-        />
-      </div>
+      <Legend
+        subtypes={subtypes}
+        subtypeTypes={subtypeTypes}
+        onAddSubtype={addSubtype}
+        onUpdateSubtype={updateSubtype}
+        onDeleteSubtype={deleteSubtype}
+        activeMarkerSubtype={activeMarkerSubtype}
+        onSelectMarkerSubtype={handleLegendMarkerSubtype}
+        onApplyClipSubgenre={handleLegendSubgenre}
+        onApplyRemixType={handleLegendRemix}
+      />
+    </div>
 
       <Inspector
         clip={selectedClip}
@@ -1061,7 +1072,7 @@ function BigTimelineHeader({ widthPx, pxPerBeat, pxPerSec, clips, subtypes, onSe
 }
 
 
-function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype }) {
+function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDeleteSubtype, activeMarkerSubtype, onSelectMarkerSubtype, onApplyClipSubgenre, onApplyRemixType }) {
   const [manage, setManage] = useState(false);
   const clipNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'clip');
   const remixNames = Object.keys(subtypes).filter(k => subtypeTypes[k] === 'remix');
@@ -1074,7 +1085,7 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
         <div className="pr-3">
           <div className="font-semibold">Clips (Subgenre)</div>
           <div className="flex gap-1 mt-1 flex-wrap">{clipNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+            <div key={name} className="flex items-center gap-1 cursor-pointer" onClick={()=> onApplyClipSubgenre && onApplyClipSubgenre(name)}><div style={{width:10,height:10,background: subtypes[name],borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
         <div className="px-3 border-l">
@@ -1097,7 +1108,7 @@ function Legend({ subtypes, subtypeTypes, onAddSubtype, onUpdateSubtype, onDelet
         <div className="pl-3 border-l">
           <div className="font-semibold">Remix (Striped)</div>
           <div className="flex gap-1 mt-1 flex-wrap">{remixNames.map(name => (
-            <div key={name} className="flex items-center gap-1"><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
+            <div key={name} className="flex items-center gap-1 cursor-pointer" onClick={()=> onApplyRemixType && onApplyRemixType(name)}><div style={{width:10,height:10,background: subtypes[name] ? `repeating-linear-gradient(45deg, ${subtypes[name]}, ${subtypes[name]} 6px, #fff 6px, #fff 12px)` : '#fff', border:'1px solid #ddd', borderRadius:2}}/><div className="text-[10px]">{name}</div></div>
           ))}</div>
         </div>
       </div>
@@ -1339,8 +1350,8 @@ function ClipView({ clip, pxPerBeat, pxPerSec, selected, onSelect, onUpdate, onA
         }
         return (
           <div key={m.id} style={{ position:'absolute', left: l, top: '8%', height: '80%', width: w, background: color, opacity: 0.78, borderRadius: 8, zIndex: 50 }} title={titleText} onMouseEnter={(e)=> showMarkerHover(e,m)} onMouseLeave={() => onClearHover()} onMouseDown={(e)=> { e.stopPropagation(); onSelectMarker(m.id); startDragMarker(e, m, 'body'); }}>
-            <div style={{ position:'absolute', left: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'left')} />
-            <div style={{ position:'absolute', right: -6, top: '50%', width:10, height:28, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'right')} />
+            <div style={{ position:'absolute', left: -4, top: '50%', width:8, height:20, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'left')} />
+            <div style={{ position:'absolute', right: -4, top: '50%', width:8, height:20, background:'rgba(255,255,255,0.92)', border:'1px solid #ddd', transform:'translateY(-50%)', cursor:'ew-resize' }} onMouseDown={(e)=> startDragMarker(e,m,'right')} />
           </div>
         );
       })}
@@ -1447,14 +1458,14 @@ function MarkerEditor({ clip, selectedMarkerRef, onAddMarker, onUpdateMarker, on
   );
 }
 
-function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playheadSec }) {
+function Plots({ energySeries, camelotSeries, camelotMarkers, pxPerSec, seconds, onHover, playheadSec }) {
   const width = Math.ceil(seconds * pxPerSec);
   const height = 100;
   const energyPath = seriesToPath(energySeries, width, height, 0);
-  const camelotPath = seriesToPath((camelotSeries||[]).map(v=>v||0), width, height, 0);
+  const camelotNums = (camelotSeries||[]).map(k=> parseInt(k) || 0);
+  const camelotPath = seriesToPath(camelotNums, width, height, 0, 12);
   const gradId = useMemo(() => uid('camGrad'), []);
-  const stops = (camelotSeries||[]).map((v,i) => {
-    const label = VALUE_TO_CAMELOT[v];
+  const stops = (camelotSeries||[]).map((label,i) => {
     const color = CAMELOT_COLORS[label] || '#0ea5e9';
     const offset = (i / ((camelotSeries.length - 1) || 1)) * 100;
     return <stop key={i} offset={`${offset}%`} stopColor={color} />;
@@ -1467,7 +1478,7 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playhe
     const idx = Math.round(ratio * (energySeries.length - 1));
     const tSec = idx * SECS_PER_BEAT;
     const energy = energySeries[idx] ?? 0;
-    const cam = camelotSeries[idx] ?? 0;
+    const cam = camelotSeries[idx] ?? '';
     const html = `<div><b>${fmtTime(tSec)} (${fmtSec2(tSec)}s)</b></div><div>Energy: ${energy}</div><div>Camelot: ${cam}</div>`;
     onHover?.({ x: e.clientX, y: e.clientY, html });
   }
@@ -1483,6 +1494,17 @@ function Plots({ energySeries, camelotSeries, pxPerSec, seconds, onHover, playhe
         </defs>
         <path d={energyPath} fill="none" strokeWidth={2} stroke="#059669" strokeLinecap="round" strokeLinejoin="round" />
         <path d={camelotPath} fill="none" strokeWidth={2} stroke={`url(#${gradId})`} strokeLinecap="round" strokeLinejoin="round" />
+        {(camelotMarkers||[]).map((m,i)=>{
+          const x = Math.round(m.sec * pxPerSec);
+          const y = height - (m.value/12)*height;
+          const color = CAMELOT_COLORS[m.key] || '#000';
+          return (
+            <g key={i}>
+              <circle cx={x} cy={y} r={4} fill={color} stroke="#000" />
+              <text x={x+6} y={y-6} fontSize={10} fill="#000">{m.name}</text>
+            </g>
+          );
+        })}
       </svg>
       <div className="absolute top-0 bottom-0 w-[2px] bg-red-500" style={{ left: playheadX }} />
     </div>
@@ -1544,19 +1566,87 @@ function buildEnergySeries(clips, samples) {
   }
   return smoothSeries(out, 5, 2);
 }
+function camelotClipCompare(a, b) {
+  const aKey = a.camelot ? 1 : 0;
+  const bKey = b.camelot ? 1 : 0;
+  if (bKey !== aKey) return bKey - aKey;
+  const aLen = (a.endSec - a.startSec);
+  const bLen = (b.endSec - b.startSec);
+  if (bLen !== aLen) return bLen - aLen;
+  return (b.energy || 0) - (a.energy || 0);
+}
+
+function keyAt(t, clips, last = '') {
+  const active = clips.filter(c => c.startSec <= t && t < c.endSec);
+  if (active.length === 0) return last;
+  active.sort(camelotClipCompare);
+  return active[0].camelot || last;
+}
+
 function buildCamelotSeries(clips, samples) {
-  const out = new Array(Math.max(1, samples)).fill(0);
+  const out = new Array(Math.max(1, samples)).fill('');
+  let last = '';
   for (let i = 0; i < out.length; i++) {
     const t = i * SECS_PER_BEAT;
-    const active = clips.filter(c => c.startSec <= t && t < c.endSec);
-    if (active.length === 0) {
-      out[i] = 0;
-      continue;
-    }
-    active.sort((a, b) => (b.energy || 0) - (a.energy || 0));
-    out[i] = camelotToValue(active[0].camelot || '');
+    const key = keyAt(t, clips, last);
+    out[i] = key;
+    if (key) last = key;
   }
   return out;
+}
+
+function camelotTransitionName(a, b) {
+  if (!a || !b) return '';
+  if (a === b) return 'Perfectly Harmonic';
+  const numA = parseInt(a);
+  const numB = parseInt(b);
+  const letA = a.slice(-1);
+  const letB = b.slice(-1);
+  const diff = (numB - numA + 12) % 12;
+  if (letA === letB) {
+    if (diff === 1) return 'Energy Boost';
+    if (diff === 11) return 'Lower Energy';
+    if (diff === 7) return 'Raising energy';
+    if (diff === 2) return 'Energy Boost ++';
+  } else {
+    if (diff === 0) return 'Relative Major <-> minor Switch';
+    if (letA === 'A' && letB === 'B' && diff === 11) return 'Sub Dominant Key';
+    if (letA === 'B' && letB === 'A' && diff === 1) return 'Sub Dominant Key';
+    if (letA === 'A' && letB === 'B' && diff === 3) return 'Mood Shifter';
+    if (letA === 'B' && letB === 'A' && diff === 9) return 'Mood Shifter';
+  }
+  return '';
+}
+
+function buildCamelotChangeMarkers(clips) {
+  const markers = [];
+  const events = [];
+  for (const c of clips) {
+    events.push({ t: c.startSec, type: 'start', clip: c });
+    events.push({ t: c.endSec, type: 'end', clip: c });
+  }
+  events.sort((a, b) => a.t - b.t || (a.type === 'end' ? -1 : 1));
+  let last = '';
+  for (const ev of events) {
+    if (ev.type === 'start') {
+      const prev = keyAt(ev.t - 0.001, clips, last);
+      const next = ev.clip.camelot;
+      if (prev && next) {
+        const name = camelotTransitionName(prev, next);
+        if (name) markers.push({ sec: ev.t, value: parseInt(next) || 0, key: next, name });
+      }
+      last = keyAt(ev.t, clips, last);
+    } else {
+      const prev = keyAt(ev.t - 0.001, clips, last);
+      const next = keyAt(ev.t, clips, last);
+      if (prev && next && prev !== next) {
+        const name = camelotTransitionName(prev, next);
+        if (name) markers.push({ sec: ev.t, value: parseInt(next) || 0, key: next, name });
+      }
+      last = next;
+    }
+  }
+  return markers;
 }
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
